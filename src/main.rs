@@ -4,13 +4,23 @@ use std::{
 };
 
 use chip8::Chip8;
-use rand::seq::IndexedRandom;
+use clap::Parser;
 
 mod chip8;
 
+#[derive(clap::Parser)]
+#[command(version, about)]
+struct Cli {
+    /// Which dir to search for ROMs
+    #[arg(short = 'd', long, default_value = "chip8-roms")]
+    rom_dir: String,
+}
+
 fn main() {
+    let args = Cli::parse();
+
     let stdin = io::stdin();
-    let mut rom_paths = chip8::find_roms(Path::new("chip8-roms"), true);
+    let mut rom_paths = chip8::find_roms(Path::new(&args.rom_dir), true);
 
     rom_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
@@ -22,12 +32,7 @@ fn main() {
             .map(|(i, p)| format!(
                 "{: >3}. {}\n",
                 i + 1,
-                p.file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .strip_suffix(".ch8")
-                    .unwrap(),
+                p.file_name().unwrap().to_str().unwrap()
             ))
             .fold(String::new(), |mut acc, p| {
                 acc.push_str(&p);
@@ -36,7 +41,7 @@ fn main() {
     );
 
     let choice = loop {
-        print!("Choose a game: ");
+        print!("Choose a ROM: ");
         io::stdout().flush().unwrap();
         let input = stdin.lock().lines().next().unwrap().unwrap();
         if let Ok(choice) = input.trim().parse::<usize>() {
@@ -52,13 +57,7 @@ fn main() {
 
     println!(
         "Running {}...",
-        rom_paths[choice]
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .strip_suffix(".ch8")
-            .unwrap()
+        rom_paths[choice].file_name().unwrap().to_str().unwrap()
     );
 
     let mut c8 = Chip8::new();
