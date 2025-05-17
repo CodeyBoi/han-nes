@@ -1,13 +1,15 @@
 use core::panic;
 use std::{
-    fs,
+    ffi::{OsStr, OsString},
+    fs::{self, FileType},
     ops::Range,
-    path::Path,
+    os,
+    path::{self, Path, PathBuf},
     thread,
     time::{Duration, Instant, SystemTime},
 };
 
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{Rng, SeedableRng, rand_core::le, rngs::SmallRng};
 use sdl2::{
     EventPump, event::Event, keyboard::Keycode, pixels::Color, rect::Point, render::Canvas,
 };
@@ -45,10 +47,13 @@ const PIXEL_SIZE: u32 = 10;
 
 const START_ADDR: Addr = 0x200;
 
+const UPDATES_PER_SECOND: u64 = 60;
+
 type Addr = u16;
 type Reg = u8;
 type Opcode = u16;
 
+#[derive(Clone, Copy, Debug)]
 pub enum Value {
     Register(Reg),
     Immediate(u8),
@@ -58,6 +63,7 @@ pub enum Value {
 pub struct Chip8 {
     registers: [u8; REGISTERS_LEN],
     memory: [u8; MEM_LEN],
+
     /** Index Register. Stores an index into memory. */
     ir: Addr,
 
@@ -103,6 +109,7 @@ enum DecodeError {
 /**
  * Vx means `registers[x]`
  */
+#[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /** Clear the screen. */
     Cls,
@@ -208,6 +215,33 @@ fn get_bits(value: u16, bits: Range<u16>) -> u16 {
     (value & bitmask(bits)) >> start
 }
 
+pub fn find_roms(dir: &Path, search_recursively: bool) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .expect("failed to list entries in dir")
+        .filter_map(|p| p.ok())
+        .flat_map(|p| {
+            let file_type = p
+                .file_type()
+                .expect("failed reading file type of dir entry");
+            if file_type.is_file() {
+                if let Some(ext) = p.path().extension() {
+                    if ext == "ch8" {
+                        vec![p.path()]
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else if search_recursively && file_type.is_dir() {
+                find_roms(&p.path(), search_recursively)
+            } else {
+                Vec::new()
+            }
+        })
+        .collect()
+}
+
 impl Chip8 {
     pub fn new() -> Self {
         let mut memory = [0; MEM_LEN];
@@ -278,7 +312,7 @@ impl Chip8 {
         let mut events = sdl_ctx.event_pump().unwrap();
 
         let mut canvas = window.into_canvas().build().unwrap();
-        canvas.set_draw_color(Color::WHITE);
+        canvas.set_draw_color(Color::BLACK);
         canvas.clear();
         canvas.present();
 
@@ -290,7 +324,9 @@ impl Chip8 {
             self.cycle();
             self.draw(&mut canvas).expect("rendering driver failed");
             let time_taken = Instant::now().duration_since(start);
-            thread::sleep(Duration::from_micros(1000 / 60).saturating_sub(time_taken));
+            thread::sleep(
+                Duration::from_micros(1000 / UPDATES_PER_SECOND).saturating_sub(time_taken),
+            );
         }
     }
 
@@ -331,7 +367,7 @@ impl Chip8 {
                     if let Some(input) = keycode_to_input(keycode) {
                         self.input[input] = true;
                     } else if keycode == Keycode::H {
-                        println!("{:?}", self);
+                        self.print_registers();
                     }
                 }
                 Event::KeyUp {
@@ -348,6 +384,8 @@ impl Chip8 {
     }
 
     fn draw(&self, canvas: &mut Canvas<sdl2::video::Window>) -> Result<(), String> {
+        canvas.set_draw_color(Color::BLACK);
+        canvas.clear();
         canvas.set_draw_color(Color::WHITE);
         canvas.set_scale(PIXEL_SIZE as f32, PIXEL_SIZE as f32)?;
         let points: Vec<_> = self
@@ -365,6 +403,7 @@ impl Chip8 {
             })
             .collect();
         canvas.draw_points(&points[..])?;
+        canvas.present();
         Ok(())
     }
 
@@ -378,6 +417,12 @@ impl Chip8 {
             ),
         }
         self.pc += 2;
+        if self.dt > 0 {
+            self.dt -= 1;
+        }
+        if self.st > 0 {
+            self.st -= 1;
+        }
     }
 
     fn fetch_opcode(&self, addr: Addr) -> Opcode {
@@ -492,7 +537,13 @@ impl Chip8 {
                 }
             }
             I::Ld { x, v } => *self.reg_mut(x) = self.value(v),
-            I::Add { x, v } => *self.reg_mut(x) += self.value(v),
+            I::Add { x, v } => {
+                let v = self.value(v);
+                if self.reg(x) as u16 + v as u16 > 255 {
+                    self.set_flag(1);
+                }
+                self.set_reg(x, self.reg(x).wrapping_add(v));
+            }
             I::Or { x, y } => *self.reg_mut(x) |= self.reg(y),
             I::And { x, y } => *self.reg_mut(x) &= self.reg(y),
             I::Xor { x, y } => *self.reg_mut(x) ^= self.reg(y),
@@ -629,15 +680,15 @@ impl Chip8 {
         for (dy, row) in sprite.iter().enumerate() {
             for dx in 0..8 {
                 let (cur_x, cur_y) = (
-                    x.wrapping_add(dx) as usize,
-                    y.wrapping_add(dy as u8) as usize,
+                    (x as usize + dx) % DISPLAY_WIDTH,
+                    (y as usize + dy) % DISPLAY_HEIGHT,
                 );
                 let pixel = row & (0x1 << (7 - dx)) != 0;
                 if pixel {
                     if self.display_memory[cur_y][cur_x] == PIXEL_ON {
                         self.set_flag(0x1);
                     }
-                    self.display_memory[cur_y][cur_x] ^= self.display_memory[cur_y][cur_x];
+                    self.display_memory[cur_y][cur_x] ^= PIXEL_ON;
                 }
             }
         }
@@ -649,6 +700,42 @@ impl Chip8 {
         } else {
             false
         }
+    }
+
+    fn print_registers(&self) {
+        println!("\nPC: {:0>3x}, IR: {:0>3x}", self.pc, self.ir);
+        println!(
+            "V0: {:0>2x}, V1: {:0>2x}, V2: {:0>2x}, V3: {:0>2x}",
+            self.reg(0x0),
+            self.reg(0x1),
+            self.reg(0x2),
+            self.reg(0x3)
+        );
+        println!(
+            "V4: {:0>2x}, V5: {:0>2x}, V6: {:0>2x}, V7: {:0>2x}",
+            self.reg(0x4),
+            self.reg(0x5),
+            self.reg(0x6),
+            self.reg(0x7)
+        );
+        println!(
+            "V8: {:0>2x}, V9: {:0>2x}, VA: {:0>2x}, VB: {:0>2x}",
+            self.reg(0x8),
+            self.reg(0x9),
+            self.reg(0xa),
+            self.reg(0xb)
+        );
+        println!(
+            "VC: {:0>2x}, VD: {:0>2x}, VE: {:0>2x}, VF: {:0>2x}",
+            self.reg(0xc),
+            self.reg(0xd),
+            self.reg(0xe),
+            self.reg(0xf)
+        );
+        println!(
+            "SP: {:0>2x}, DT: {:0>2x}, ST: {:0>2x}",
+            self.sp, self.dt, self.st
+        );
     }
 }
 
