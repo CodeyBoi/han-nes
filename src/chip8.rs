@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IndexedRandom};
 use sdl2::{
     EventPump, event::Event, keyboard::Keycode, pixels::Color, rect::Point, render::Canvas,
 };
@@ -37,11 +37,11 @@ const FONTSET: [u8; FONTSET_LEN] = [
 ];
 const INPUT_KEYS_LEN: usize = 16;
 
-const DISPLAY_WIDTH: usize = 64;
-const DISPLAY_HEIGHT: usize = 32;
+const DISPLAY_WIDTH: usize = 128;
+const DISPLAY_HEIGHT: usize = 64;
 const PIXEL_ON: u32 = 0xffffffff;
 const PIXEL_OFF: u32 = 0x00000000;
-const PIXEL_SIZE: u32 = 10;
+const PIXEL_SIZE: u32 = 5;
 const FOREGROUND_COLOR: Color = Color::WHITE;
 const BACKGROUND_COLOR: Color = Color::BLACK;
 
@@ -102,6 +102,7 @@ pub struct Chip8 {
 
     is_running: bool,
     is_suspended: bool,
+    is_in_extended_mode: bool,
 
     /** Current system tick. */
     tick: u64,
@@ -154,11 +155,29 @@ enum DecodeError {
  */
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
+    /** Scroll display `n` lines down. */
+    ScrollDown(u8),
+
     /** Clear the screen. */
     Clear,
 
     /** Return from a subroutine. */
     Return,
+
+    /** Scroll display 4 pixels right. */
+    ScrollRight,
+
+    /** Scroll display 4 pixels left. */
+    ScrollLeft,
+
+    /** Exit CHIP Interpreter. */
+    ExitChip,
+
+    /** Disable extended screen mode. */
+    DisableExtendedScreen,
+
+    /** Enable extended screen mode for full screen graphics. */
+    EnableExtendedScreen,
 
     /** Jump to location `addr`. */
     Jump(Addr),
@@ -235,6 +254,9 @@ pub enum Instruction {
     /** Set `I` to location of digit sprite corresponding to value in `Vx`. */
     LoadDigitIndex { x: Reg },
 
+    /** Set `I` to location of extended digit sprite corresponding to value in `Vx`. */
+    LoadExtendedDigitIndex { x: Reg },
+
     /** Store BCD representation of `Vx` in location `I`, `I+1` and `I+2`. */
     LoadBcd { x: Reg },
 
@@ -243,6 +265,12 @@ pub enum Instruction {
 
     /** Read registers `V0` to `Vx` from memory starting at location `I`. */
     LoadRegisters { x: Reg },
+
+    /** Store registers `V0` to `Vx` in RPL user flags (x <= 7). */
+    StoreRegistersRPL { x: Reg },
+
+    /** Load registers `V0` to `Vx` from RPL user flags (x <= 7). */
+    LoadRegistersRPL { x: Reg },
 }
 
 fn bitmask(bits: Range<u16>) -> u16 {
@@ -317,6 +345,7 @@ impl Chip8 {
             quirks: Quirks::CHIP8,
             is_running: false,
             is_suspended: false,
+            is_in_extended_mode: false,
             tick: 0,
         }
     }
@@ -484,6 +513,24 @@ impl Chip8 {
         Ok(())
     }
 
+    fn scroll_display(&mut self, dx: i8, dy: i8) {
+        let mut buf = [[PIXEL_OFF; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
+        for (y, row) in buf.iter_mut().enumerate() {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                let (src_x, src_y) = (
+                    x.wrapping_add_signed(dx as isize),
+                    y.wrapping_add_signed(dy as isize),
+                );
+                *pixel = if src_x < DISPLAY_WIDTH && src_y < DISPLAY_HEIGHT {
+                    self.display_memory[src_y][src_x]
+                } else {
+                    PIXEL_OFF
+                };
+            }
+        }
+        self.display_memory = buf;
+    }
+
     fn frame_cycle(&mut self) {
         let opcode = self.fetch_opcode(self.pc);
         match Chip8::decode(opcode) {
@@ -511,9 +558,21 @@ impl Chip8 {
         let y = get_bits(opcode, 4..8) as Reg;
         let byte = get_bits(opcode, 0..8) as u8;
         Ok(match code {
-            0x0 => match byte {
-                0xe0 => I::Clear,
-                0xee => I::Return,
+            0x0 => match y {
+                0xc => I::ScrollDown(n),
+                0xe => match n {
+                    0x0 => I::Clear,
+                    0xe => I::Return,
+                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                },
+                0xf => match n {
+                    0xb => I::ScrollRight,
+                    0xc => I::ScrollLeft,
+                    0xd => I::ExitChip,
+                    0xe => I::DisableExtendedScreen,
+                    0xf => I::EnableExtendedScreen,
+                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
             0x1 => I::Jump(addr),
@@ -582,9 +641,12 @@ impl Chip8 {
                 0x18 => I::LoadRegisterIntoSt { x },
                 0x1e => I::AddIndex { x },
                 0x29 => I::LoadDigitIndex { x },
+                0x30 => I::LoadExtendedDigitIndex { x },
                 0x33 => I::LoadBcd { x },
                 0x55 => I::StoreRegisters { x },
                 0x65 => I::LoadRegisters { x },
+                0x75 => I::StoreRegistersRPL { x },
+                0x85 => I::LoadRegistersRPL { x },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
             _ => unreachable!("All 16-bit values are accounted for"),
@@ -594,8 +656,14 @@ impl Chip8 {
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
         match instruction {
+            I::ScrollDown(n) => self.scroll_display(0, n as i8),
             I::Clear => self.display_memory = [[0x0; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
             I::Return => self.ret(),
+            I::ScrollRight => self.scroll_display(4, 0),
+            I::ScrollLeft => self.scroll_display(-4, 0),
+            I::ExitChip => self.is_running = false,
+            I::DisableExtendedScreen => self.is_in_extended_mode = false,
+            I::EnableExtendedScreen => self.is_in_extended_mode = true,
             I::Jump(addr) => self.jump(addr),
             I::Call(addr) => self.call(addr),
             I::SkipIfEqual { x, v } => {
@@ -677,10 +745,19 @@ impl Chip8 {
             }
             I::Draw { x, y, n } => {
                 let (x, y) = (self.reg(x), self.reg(y));
-                let mut sprite = vec![0x0; n as usize];
-                sprite
-                    .copy_from_slice(&self.memory[self.ir as usize..(self.ir + n as u16) as usize]);
-                self.draw_sprite(x, y, &sprite);
+                let mut sprite = if n == 0 {
+                    vec![0x0; 32]
+                } else {
+                    vec![0x0; n as usize]
+                };
+                sprite.copy_from_slice(
+                    &self.memory[self.ir as usize..(self.ir + sprite.len() as u16) as usize],
+                );
+                if sprite.len() == 32 {
+                    self.draw_hi_res_sprite(x, y, &sprite);
+                } else {
+                    self.draw_sprite(x, y, &sprite);
+                }
             }
             I::SkipIfKeyPressed { x } => {
                 if self.is_key_down(self.reg(x)) {
@@ -789,7 +866,45 @@ impl Chip8 {
         self.set_flag(0x0);
         let (x, y) = (x as usize % DISPLAY_WIDTH, y as usize % DISPLAY_HEIGHT);
         for (dy, row) in sprite.iter().enumerate() {
+            let mut is_row_collided = false;
             for dx in 0..8 {
+                let (cur_x, cur_y) = if self.quirks.clipping {
+                    (x + dx, y + dy)
+                } else {
+                    ((x + dx) % DISPLAY_WIDTH, (y + dy) % DISPLAY_HEIGHT)
+                };
+                if cur_y >= DISPLAY_HEIGHT {
+                    is_row_collided = true;
+                    continue;
+                }
+                if cur_x >= DISPLAY_WIDTH {
+                    continue;
+                }
+                let pixel = row & (0x1 << (u8::BITS as usize - dx - 1)) != 0;
+                if pixel {
+                    if self.get_pixel(cur_x, cur_y) == PIXEL_ON {
+                        is_row_collided = true;
+                    }
+                    self.draw_pixel(cur_x, cur_y);
+                }
+            }
+            if is_row_collided {
+                if self.is_in_extended_mode {
+                    self.set_flag(self.reg(0xf) + 1);
+                } else {
+                    self.set_flag(0x1);
+                }
+            }
+        }
+    }
+
+    fn draw_hi_res_sprite(&mut self, x: u8, y: u8, sprite: &[u8]) {
+        self.set_flag(0x0);
+        let (x, y) = (x as usize % DISPLAY_WIDTH, y as usize % DISPLAY_HEIGHT);
+
+        for dy in 0..16 {
+            let row = ((sprite[dy * 2] as u16) << 8) | sprite[dy * 2 + 1] as u16;
+            for dx in 0..16 {
                 let (cur_x, cur_y) = if self.quirks.clipping {
                     (x + dx, y + dy)
                 } else {
@@ -798,14 +913,37 @@ impl Chip8 {
                 if cur_x >= DISPLAY_WIDTH || cur_y >= DISPLAY_HEIGHT {
                     continue;
                 }
-                let pixel = row & (0x1 << (7 - dx)) != 0;
+                let pixel = row & (0x1 << (u16::BITS as usize - dx - 1)) != 0;
                 if pixel {
-                    if self.display_memory[cur_y][cur_x] == PIXEL_ON {
-                        self.set_flag(0x1);
-                    }
-                    self.display_memory[cur_y][cur_x] ^= PIXEL_ON;
+                    if self.get_pixel(cur_x, cur_y) == PIXEL_ON {}
+                    self.draw_pixel(cur_x, cur_y);
                 }
             }
+        }
+    }
+
+    /* TODO: Rewrite drawing function, to handle extended mode */
+
+    fn get_pixel(&self, x: usize, y: usize) -> u32 {
+        if self.is_in_extended_mode {
+            self.display_memory[x][y]
+        } else {
+            self.display_memory[x * 2][y * 2]
+        }
+    }
+
+    fn draw_pixel(&mut self, x: usize, y: usize) {
+        let (x, y) = if self.is_in_extended_mode {
+            (x, y)
+        } else {
+            /* If in low-res mode, pixels are 2x2 and coordinates for drawing are doubled */
+            (x * 2, y * 2)
+        };
+        self.display_memory[x][y] ^= PIXEL_ON;
+        if !self.is_in_extended_mode {
+            self.display_memory[x + 1][y] ^= PIXEL_ON;
+            self.display_memory[x][y + 1] ^= PIXEL_ON;
+            self.display_memory[x + 1][y + 1] ^= PIXEL_ON;
         }
     }
 
