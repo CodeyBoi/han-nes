@@ -155,25 +155,25 @@ enum DecodeError {
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /** Clear the screen. */
-    Cls,
+    Clear,
 
     /** Return from a subroutine. */
-    Ret,
+    Return,
 
     /** Jump to location `addr`. */
-    Jp(Addr),
+    Jump(Addr),
 
     /** Call subroutine at `addr`. */
     Call(Addr),
 
     /** Skip next instruction if `Vx == v`. */
-    Se { x: Reg, v: Value },
+    SkipIfEqual { x: Reg, v: Value },
 
     /** Skip next instruction if `Vx != v`. */
-    Sne { x: Reg, v: Value },
+    SkipIfNotEqual { x: Reg, v: Value },
 
     /** Set value of `Vx` to `v`. */
-    Ld { x: Reg, v: Value },
+    Load { x: Reg, v: Value },
 
     /** Set value of `Vx` to `Vx + v`. Set `Vf = 1` if `v` is a register and `Vx + v > 255`. */
     Add { x: Reg, v: Value },
@@ -191,58 +191,58 @@ pub enum Instruction {
     Sub { x: Reg, y: Reg },
 
     /** Set `Vf = 1` if least significant bit of `Vx` is one. Then set value of `Vx` to `Vx >> 1`. */
-    Shr { x: Reg, y: Reg },
+    ShiftRight { x: Reg, y: Reg },
 
     /** Set `Vf = 1` if `Vy > Vx`. Then set value of `Vx` to `Vx - Vy`. */
-    Subn { x: Reg, y: Reg },
+    SubNegative { x: Reg, y: Reg },
 
     /**  Set `Vf = 1` if most significant bit of `Vx` is one. Then set value of `Vx` to `Vx << 1`. */
-    Shl { x: Reg, y: Reg },
+    ShiftLeft { x: Reg, y: Reg },
 
     /** Set register `I` to `addr`. */
-    Ldi(Addr),
+    LoadIndex(Addr),
 
     /** Jump to location `addr + V0`. */
-    Jpv0(Addr),
+    JumpOffset(Addr),
 
     /** Set `Vx` to a newly generated random byte ANDed with `mask`. */
-    Rnd { x: Reg, mask: u8 },
+    Random { x: Reg, mask: u8 },
 
     /** Display an n-byte sprite starting at location `I` at `(Vx, Vy)`. Set `Vf = collision`. */
-    Drw { x: Reg, y: Reg, n: u8 },
+    Draw { x: Reg, y: Reg, n: u8 },
 
     /** Skip next instruction if key with the value in `Vx` is pressed. */
-    Skp { x: Reg },
+    SkipIfKeyPressed { x: Reg },
 
     /** Skip next instruction if key with the value in `Vx` is NOT pressed. */
-    Sknp { x: Reg },
+    SkipIfKeyNotPressed { x: Reg },
 
     /** Set `Vx = DT`. */
-    Ldrdt { x: Reg },
+    LoadDtIntoRegister { x: Reg },
 
     /** Wait for a key press, then store value of key in `Vx`. */
-    Ldk { x: Reg },
+    LoadKeyPress { x: Reg },
 
     /** Set `DT = Vx`. */
-    Lddtr { x: Reg },
+    LoadRegisterIntoDt { x: Reg },
 
     /** Set `ST = Vx`. */
-    Ldstr { x: Reg },
+    LoadRegisterIntoSt { x: Reg },
 
     /** Set `I` to `I + Vx`. */
-    Addi { x: Reg },
+    AddIndex { x: Reg },
 
     /** Set `I` to location of digit sprite corresponding to value in `Vx`. */
-    Ldf { x: Reg },
+    LoadDigitIndex { x: Reg },
 
     /** Store BCD representation of `Vx` in location `I`, `I+1` and `I+2`. */
-    Ldb { x: Reg },
+    LoadBcd { x: Reg },
 
     /** Store `V0` to `Vx` in memory, starting at location `I`. */
-    Strs { x: Reg },
+    StoreRegisters { x: Reg },
 
     /** Read registers `V0` to `Vx` from memory starting at location `I`. */
-    Ldrs { x: Reg },
+    LoadRegisters { x: Reg },
 }
 
 fn bitmask(bits: Range<u16>) -> u16 {
@@ -512,28 +512,28 @@ impl Chip8 {
         let byte = get_bits(opcode, 0..8) as u8;
         Ok(match code {
             0x0 => match byte {
-                0xe0 => I::Cls,
-                0xee => I::Ret,
+                0xe0 => I::Clear,
+                0xee => I::Return,
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
-            0x1 => I::Jp(addr),
+            0x1 => I::Jump(addr),
             0x2 => I::Call(addr),
-            0x3 => I::Se {
+            0x3 => I::SkipIfEqual {
                 x,
                 v: Value::Immediate(byte),
             },
-            0x4 => I::Sne {
+            0x4 => I::SkipIfNotEqual {
                 x,
                 v: Value::Immediate(byte),
             },
             0x5 => match n {
-                0x0 => I::Se {
+                0x0 => I::SkipIfEqual {
                     x,
                     v: Value::Register(y),
                 },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
-            0x6 => I::Ld {
+            0x6 => I::Load {
                 x,
                 v: Value::Immediate(byte),
             },
@@ -542,7 +542,7 @@ impl Chip8 {
                 v: Value::Immediate(byte),
             },
             0x8 => match n {
-                0x0 => I::Ld {
+                0x0 => I::Load {
                     x,
                     v: Value::Register(y),
                 },
@@ -554,37 +554,37 @@ impl Chip8 {
                     v: Value::Register(y),
                 },
                 0x5 => I::Sub { x, y },
-                0x6 => I::Shr { x, y },
-                0x7 => I::Subn { x, y },
-                0xe => I::Shl { x, y },
+                0x6 => I::ShiftRight { x, y },
+                0x7 => I::SubNegative { x, y },
+                0xe => I::ShiftLeft { x, y },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
             0x9 => match n {
-                0x0 => I::Sne {
+                0x0 => I::SkipIfNotEqual {
                     x,
                     v: Value::Register(y),
                 },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
-            0xa => I::Ldi(addr),
-            0xb => I::Jpv0(addr),
-            0xc => I::Rnd { x, mask: byte },
-            0xd => I::Drw { x, y, n },
+            0xa => I::LoadIndex(addr),
+            0xb => I::JumpOffset(addr),
+            0xc => I::Random { x, mask: byte },
+            0xd => I::Draw { x, y, n },
             0xe => match byte {
-                0x9e => I::Skp { x },
-                0xa1 => I::Sknp { x },
+                0x9e => I::SkipIfKeyPressed { x },
+                0xa1 => I::SkipIfKeyNotPressed { x },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
             0xf => match byte {
-                0x07 => I::Ldrdt { x },
-                0x0a => I::Ldk { x },
-                0x15 => I::Lddtr { x },
-                0x18 => I::Ldstr { x },
-                0x1e => I::Addi { x },
-                0x29 => I::Ldf { x },
-                0x33 => I::Ldb { x },
-                0x55 => I::Strs { x },
-                0x65 => I::Ldrs { x },
+                0x07 => I::LoadDtIntoRegister { x },
+                0x0a => I::LoadKeyPress { x },
+                0x15 => I::LoadRegisterIntoDt { x },
+                0x18 => I::LoadRegisterIntoSt { x },
+                0x1e => I::AddIndex { x },
+                0x29 => I::LoadDigitIndex { x },
+                0x33 => I::LoadBcd { x },
+                0x55 => I::StoreRegisters { x },
+                0x65 => I::LoadRegisters { x },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
             },
             _ => unreachable!("All 16-bit values are accounted for"),
@@ -594,21 +594,21 @@ impl Chip8 {
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
         match instruction {
-            I::Cls => self.display_memory = [[0x0; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
-            I::Ret => self.ret(),
-            I::Jp(addr) => self.jump(addr),
+            I::Clear => self.display_memory = [[0x0; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
+            I::Return => self.ret(),
+            I::Jump(addr) => self.jump(addr),
             I::Call(addr) => self.call(addr),
-            I::Se { x, v } => {
+            I::SkipIfEqual { x, v } => {
                 if self.reg(x) == self.value(v) {
                     self.skip();
                 }
             }
-            I::Sne { x, v } => {
+            I::SkipIfNotEqual { x, v } => {
                 if self.reg(x) != self.value(v) {
                     self.skip();
                 }
             }
-            I::Ld { x, v } => *self.reg_mut(x) = self.value(v),
+            I::Load { x, v } => *self.reg_mut(x) = self.value(v),
             I::Add { x, v } => {
                 let (lhs, rhs) = (self.reg(x), self.value(v));
                 self.set_reg(x, lhs.wrapping_add(rhs));
@@ -637,7 +637,7 @@ impl Chip8 {
                 self.set_reg(x, lhs.wrapping_sub(rhs));
                 self.set_flag((lhs >= rhs) as u8);
             }
-            I::Shr { x, y } => {
+            I::ShiftRight { x, y } => {
                 let lhs = if self.quirks.shifting {
                     self.reg(x)
                 } else {
@@ -646,12 +646,12 @@ impl Chip8 {
                 self.set_reg(x, lhs >> 1);
                 self.set_flag((lhs & 0x1 != 0) as u8);
             }
-            I::Subn { x, y } => {
+            I::SubNegative { x, y } => {
                 let (lhs, rhs) = (self.reg(x), self.reg(y));
                 self.set_reg(x, rhs.wrapping_sub(lhs));
                 self.set_flag((rhs >= lhs) as u8);
             }
-            I::Shl { x, y } => {
+            I::ShiftLeft { x, y } => {
                 let lhs = if self.quirks.shifting {
                     self.reg(x)
                 } else {
@@ -660,8 +660,8 @@ impl Chip8 {
                 self.set_reg(x, lhs << 1);
                 self.set_flag((lhs & (0x1 << 7) != 0) as u8);
             }
-            I::Ldi(addr) => self.ir = addr,
-            I::Jpv0(addr) => {
+            I::LoadIndex(addr) => self.ir = addr,
+            I::JumpOffset(addr) => {
                 let x = if self.quirks.jumping {
                     get_bits(addr, 8..12) as u8
                 } else {
@@ -669,31 +669,31 @@ impl Chip8 {
                 };
                 self.jump(self.reg(x) as u16 + addr);
             }
-            I::Rnd { x, mask } => {
+            I::Random { x, mask } => {
                 let mut buf = [0];
                 self.rng.fill(&mut buf);
                 self.rand = buf[0];
                 self.set_reg(x, self.rand & mask);
             }
-            I::Drw { x, y, n } => {
+            I::Draw { x, y, n } => {
                 let (x, y) = (self.reg(x), self.reg(y));
                 let mut sprite = vec![0x0; n as usize];
                 sprite
                     .copy_from_slice(&self.memory[self.ir as usize..(self.ir + n as u16) as usize]);
                 self.draw_sprite(x, y, &sprite);
             }
-            I::Skp { x } => {
+            I::SkipIfKeyPressed { x } => {
                 if self.is_key_down(self.reg(x)) {
                     self.skip();
                 }
             }
-            I::Sknp { x } => {
+            I::SkipIfKeyNotPressed { x } => {
                 if !self.is_key_down(self.reg(x)) {
                     self.skip();
                 }
             }
-            I::Ldrdt { x } => self.set_reg(x, self.dt),
-            I::Ldk { x } => {
+            I::LoadDtIntoRegister { x } => self.set_reg(x, self.dt),
+            I::LoadKeyPress { x } => {
                 for (i, key) in self.input.iter().enumerate() {
                     if *key {
                         self.set_reg(x, i as u8);
@@ -703,11 +703,11 @@ impl Chip8 {
                 self.pc -= 2;
             }
 
-            I::Lddtr { x } => self.dt = self.reg(x),
-            I::Ldstr { x } => self.st = self.reg(x),
-            I::Addi { x } => self.ir += self.reg(x) as u16,
-            I::Ldf { x } => self.ir = FONTSET_ADDR + self.reg(x) as u16 * 5,
-            I::Ldb { x } => {
+            I::LoadRegisterIntoDt { x } => self.dt = self.reg(x),
+            I::LoadRegisterIntoSt { x } => self.st = self.reg(x),
+            I::AddIndex { x } => self.ir += self.reg(x) as u16,
+            I::LoadDigitIndex { x } => self.ir = FONTSET_ADDR + self.reg(x) as u16 * 5,
+            I::LoadBcd { x } => {
                 let vx = self.reg(x);
                 let idx = self.ir as usize;
                 self.memory[idx] = vx / 100;
@@ -715,7 +715,7 @@ impl Chip8 {
                 self.memory[idx + 2] = vx % 10;
             }
 
-            I::Strs { x } => {
+            I::StoreRegisters { x } => {
                 let x = x as usize;
                 let idx = self.ir as usize;
                 self.memory[idx..idx + x + 1].copy_from_slice(&self.registers[0..x + 1]);
@@ -723,7 +723,7 @@ impl Chip8 {
                     self.ir += x as u16 + 1;
                 }
             }
-            I::Ldrs { x } => {
+            I::LoadRegisters { x } => {
                 let x = x as usize;
                 let idx = self.ir as usize;
                 self.registers[0..x + 1].copy_from_slice(&self.memory[idx..idx + x + 1]);
