@@ -1,66 +1,51 @@
-use std::{
-    io::{self, BufRead, Write},
-    path::Path,
-};
+use std::path::PathBuf;
 
 use chip8::Chip8;
-use clap::Parser;
+use clap::{CommandFactory, Parser, Subcommand};
 
 mod chip8;
 
-#[derive(clap::Parser)]
+#[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    /// Which dir to search for ROMs
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// A Chip8 emulator, capable of running `ch8` ROMs
+    Chip8(Chip8Args),
+}
+
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Chip8Args {
+    /// Which dir to search for ROMs to present in the ROM Selector TUI
     #[arg(short = 'd', long, default_value = "chip8-roms")]
-    rom_dir: String,
+    roms_dir: PathBuf,
+
+    /// The ROM to load and run on startup
+    #[arg(short, long)]
+    binary: Option<PathBuf>,
+
+    /// Which chip type to emulate
+    #[arg(short = 't', long, value_enum, default_value_t = chip8::ChipType::Chip8)]
+    chip_type: chip8::ChipType,
 }
 
 fn main() {
-    let args = Cli::parse();
-
-    let stdin = io::stdin();
-    let mut rom_paths = chip8::find_roms(Path::new(&args.rom_dir), true);
-
-    rom_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-
-    println!(
-        "{}",
-        rom_paths
-            .iter()
-            .enumerate()
-            .map(|(i, p)| format!(
-                "{: >3}. {}\n",
-                i + 1,
-                p.file_name().unwrap().to_str().unwrap()
-            ))
-            .fold(String::new(), |mut acc, p| {
-                acc.push_str(&p);
-                acc
-            })
-    );
-
-    let choice = loop {
-        print!("Choose a ROM: ");
-        io::stdout().flush().unwrap();
-        let input = stdin.lock().lines().next().unwrap().unwrap();
-        if let Ok(choice) = input.trim().parse::<usize>() {
-            if choice - 1 < rom_paths.len() {
-                break choice - 1;
-            } else {
-                println!("Index {} out of range.", choice);
-            }
-        } else {
-            println!("Error parsing {}", input);
+    let (mut cmd, args) = (Cli::command(), Cli::parse());
+    match args.command {
+        Some(Command::Chip8(args)) => {
+            let mut chip = Chip8::new(args.chip_type);
+            let rom = match args.binary {
+                Some(rom) => rom,
+                None => chip8::run_rom_selector_cli(&args.roms_dir),
+            };
+            chip.load_rom(&rom).expect("ROM too large for memory");
+            chip.run();
         }
-    };
-
-    println!(
-        "Running {}...",
-        rom_paths[choice].file_name().unwrap().to_str().unwrap()
-    );
-
-    let mut c8 = Chip8::new();
-    c8.load_rom(&rom_paths[choice]).unwrap();
-    c8.run();
+        None => cmd.print_help().expect("failed printing error message"),
+    }
 }

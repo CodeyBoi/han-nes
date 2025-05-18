@@ -1,12 +1,14 @@
 use core::panic;
 use std::{
     fs::{self},
+    io::{self, BufRead, Write},
     ops::Range,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant, SystemTime},
 };
 
+use clap::ValueEnum;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use sdl2::{
     EventPump, event::Event, keyboard::Keycode, pixels::Color, rect::Point, render::Canvas,
@@ -51,6 +53,8 @@ const UPDATES_PER_SECOND: u64 = 660;
 
 const FRAMES_PER_SECOND: u64 = 60;
 
+const TIMER_DECREMENTS_PER_SECOND: u64 = 60;
+
 pub const ALLOWED_FILE_EXTENSIONS: &[&str] = &["ch8"];
 
 type Addr = u16;
@@ -89,6 +93,9 @@ pub struct Chip8 {
     /** Input Keys. Stores whether each of the 16 input keys is pressed or not pressed. */
     input: [bool; 16],
 
+    /** Same as above but for last cycle. Used for detecting a key down-event. */
+    input_last_cycle: [bool; 16],
+
     /** Monochrome Display Memory. A memory buffer storing the graphics to display. */
     display_memory: [[u32; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
 
@@ -107,8 +114,19 @@ pub struct Chip8 {
     /** Current system tick. */
     tick: u64,
 
-    /** RPL Flag Registers. Used to save the registers for the Super-Chip instruction */
+    /** RPL Flag Registers. Used to save the registers for the Super-Chip instruction. */
     rpl: [u8; REGISTERS_LEN],
+
+    /** When the next display interrupt will be. Used for determining how long to halt when executing Draw instruction. */
+    next_display_interrupt: Instant,
+}
+
+#[derive(Clone, ValueEnum, Debug)]
+pub enum ChipType {
+    Chip8,
+    SuperChipLegacy,
+    SuperChipModern,
+    XoChip,
 }
 
 /** Struct storing the differences in behaviour between the various Chip8 versions. */
@@ -139,6 +157,33 @@ impl Quirks {
         memory: true,
         display_wait: true,
         clipping: true,
+        shifting: false,
+        jumping: false,
+    };
+
+    const SUPER_CHIP_LEGACY: Self = Self {
+        vf_reset: false,
+        memory: false,
+        display_wait: true,
+        clipping: true,
+        shifting: true,
+        jumping: true,
+    };
+
+    const SUPER_CHIP_MODERN: Self = Self {
+        vf_reset: false,
+        memory: false,
+        display_wait: false,
+        clipping: true,
+        shifting: true,
+        jumping: true,
+    };
+
+    const XO_CHIP: Self = Self {
+        vf_reset: false,
+        memory: true,
+        display_wait: false,
+        clipping: false,
         shifting: false,
         jumping: false,
     };
@@ -319,8 +364,59 @@ pub fn find_roms(dir: &Path, search_recursively: bool) -> Vec<PathBuf> {
         .collect()
 }
 
+pub fn run_rom_selector_cli(roms_dir: &Path) -> PathBuf {
+    let stdin = io::stdin();
+    let mut rom_paths = find_roms(Path::new(roms_dir), true);
+
+    rom_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    println!(
+        "{}",
+        rom_paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| format!(
+                "{: >3}. {}\n",
+                i + 1,
+                p.file_name().unwrap().to_str().unwrap()
+            ))
+            .fold(String::new(), |mut acc, p| {
+                acc.push_str(&p);
+                acc
+            })
+    );
+
+    let choice = loop {
+        print!("Choose a ROM: ");
+        io::stdout().flush().unwrap();
+        let input = stdin.lock().lines().next().unwrap().unwrap();
+        if let Ok(choice) = input.trim().parse::<usize>() {
+            if choice - 1 < rom_paths.len() {
+                break choice - 1;
+            } else {
+                println!("Index {} out of range.", choice);
+            }
+        } else {
+            println!("Error parsing {}", input);
+        }
+    };
+
+    println!(
+        "Running {}...",
+        rom_paths[choice].file_name().unwrap().to_str().unwrap()
+    );
+
+    rom_paths[choice].clone()
+}
+
+impl Default for Chip8 {
+    fn default() -> Self {
+        Self::new(ChipType::Chip8)
+    }
+}
+
 impl Chip8 {
-    pub fn new() -> Self {
+    pub fn new(chip_type: ChipType) -> Self {
         let mut memory = [0; MEM_LEN];
 
         for (dst, src) in memory[FONTSET_ADDR as usize..].iter_mut().zip(FONTSET) {
@@ -333,7 +429,15 @@ impl Chip8 {
                 .unwrap()
                 .as_secs(),
         );
+
         let rand = rng.random_range(0x0..=u8::MAX);
+
+        let quirks = match chip_type {
+            ChipType::Chip8 => Quirks::CHIP8,
+            ChipType::SuperChipLegacy => Quirks::SUPER_CHIP_LEGACY,
+            ChipType::SuperChipModern => Quirks::SUPER_CHIP_MODERN,
+            ChipType::XoChip => Quirks::XO_CHIP,
+        };
 
         Self {
             registers: [0x0; REGISTERS_LEN],
@@ -345,15 +449,17 @@ impl Chip8 {
             dt: 0x0,
             st: 0x0,
             input: [false; INPUT_KEYS_LEN],
+            input_last_cycle: [false; INPUT_KEYS_LEN],
             display_memory: [[PIXEL_OFF; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
             rng,
             rand,
-            quirks: Quirks::CHIP8,
+            quirks,
             is_running: false,
             is_suspended: false,
             is_in_extended_mode: false,
             tick: 0,
             rpl: [0x0; REGISTERS_LEN],
+            next_display_interrupt: Instant::now(),
         }
     }
 
@@ -362,7 +468,7 @@ impl Chip8 {
         P: AsRef<Path> + ?Sized,
     {
         self.load(
-            &fs::read(filepath).expect("couldn't open ROM file"),
+            &fs::read(filepath).expect("failed opening ROM file"),
             START_ADDR,
         )?;
         Ok(())
@@ -398,36 +504,47 @@ impl Chip8 {
         canvas.clear();
         canvas.present();
 
-        self.is_running = true;
-
+        let now = Instant::now();
         let duration_per_update = Duration::from_micros(1_000_000 / UPDATES_PER_SECOND);
-        let mut last_update = Instant::now() - duration_per_update;
+        let mut next_update = now;
 
         let duration_per_frame = Duration::from_micros(1_000_000 / FRAMES_PER_SECOND);
-        let mut last_render = Instant::now() - duration_per_frame;
+        self.next_display_interrupt = now;
+
+        let duration_per_timer_decrement =
+            Duration::from_micros(1_000_000 / TIMER_DECREMENTS_PER_SECOND);
+        let mut next_timer_decrement = now;
+
+        self.is_running = true;
 
         while self.is_running {
             self.handle_events(&mut events);
-            if last_update.elapsed() >= duration_per_update {
-                last_update = Instant::now();
 
-                if self.is_suspended {
-                    continue;
-                }
-
-                self.frame_cycle();
-            }
-            if last_render.elapsed() >= duration_per_frame {
-                last_render = Instant::now();
+            if Instant::now() >= next_timer_decrement {
+                next_timer_decrement += duration_per_timer_decrement;
                 if self.dt > 0 {
                     self.dt -= 1;
                 }
                 if self.st > 0 {
                     self.st -= 1;
                 }
+            }
 
+            if Instant::now() >= self.next_display_interrupt {
+                self.next_display_interrupt += duration_per_frame;
                 self.draw(&mut canvas).expect("rendering driver failed");
             }
+
+            if Instant::now() >= next_update {
+                next_update += duration_per_update;
+
+                if self.is_suspended {
+                    continue;
+                }
+
+                self.cycle();
+            }
+
             thread::sleep(Duration::from_micros(100));
         }
     }
@@ -454,6 +571,8 @@ impl Chip8 {
                 _ => return None,
             })
         }
+
+        self.input_last_cycle = self.input;
 
         for event in events.poll_iter() {
             match event {
@@ -525,8 +644,8 @@ impl Chip8 {
         for (y, row) in buf.iter_mut().enumerate() {
             for (x, pixel) in row.iter_mut().enumerate() {
                 let (src_x, src_y) = (
-                    x.wrapping_add_signed(dx as isize),
-                    y.wrapping_add_signed(dy as isize),
+                    x.wrapping_add_signed(-dx as isize),
+                    y.wrapping_add_signed(-dy as isize),
                 );
                 *pixel = if src_x < DISPLAY_WIDTH && src_y < DISPLAY_HEIGHT {
                     self.display_memory[src_y][src_x]
@@ -538,7 +657,7 @@ impl Chip8 {
         self.display_memory = buf;
     }
 
-    fn frame_cycle(&mut self) {
+    fn cycle(&mut self) {
         let opcode = self.fetch_opcode(self.pc);
         match Chip8::decode(opcode) {
             Ok(instruction) => self.execute(instruction),
@@ -764,6 +883,20 @@ impl Chip8 {
                 };
                 let (ir, len) = (self.ir as usize, sprite.len());
                 sprite.copy_from_slice(&self.memory[ir..ir + len]);
+
+                if self.quirks.display_wait {
+                    /* Wait until right after next screen refresh to draw sprite. */
+                    let update_delta = Duration::from_micros(1_000_000 / UPDATES_PER_SECOND);
+                    let updates_per_frame = UPDATES_PER_SECOND / FRAMES_PER_SECOND;
+                    if ((self.next_display_interrupt - Instant::now())
+                        .div_duration_f32(update_delta) as usize)
+                        < updates_per_frame as usize - 2
+                    {
+                        self.pc -= 2;
+                        return;
+                    }
+                }
+
                 self.draw_sprite(x, y, &sprite, width);
             }
             I::SkipIfKeyPressed { x } => {
@@ -778,8 +911,10 @@ impl Chip8 {
             }
             I::LoadDtIntoRegister { x } => self.set_reg(x, self.dt),
             I::LoadKeyPress { x } => {
-                for (i, key) in self.input.iter().enumerate() {
-                    if *key {
+                for (i, (pressed, pressed_last_cycle)) in
+                    self.input.iter().zip(&self.input_last_cycle).enumerate()
+                {
+                    if *pressed && !*pressed_last_cycle {
                         self.set_reg(x, i as u8);
                         return;
                     }
