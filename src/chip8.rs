@@ -149,6 +149,9 @@ pub struct Quirks {
 
     /** Jumping. The `JPV0` opcode doesn't use V0, but instead `Vx` where `x` is the highest 4 bits of `addr` (i.e. `xnn`). */
     jumping: bool,
+
+    /** Scrolling. If the scrolling instructions operate on the "physical" (=false) or on the "logical" (=true) pixels in `lowres` mode */
+    scrolling: bool,
 }
 
 impl Quirks {
@@ -159,6 +162,7 @@ impl Quirks {
         clipping: true,
         shifting: false,
         jumping: false,
+        scrolling: false,
     };
 
     const SUPER_CHIP_LEGACY: Self = Self {
@@ -168,6 +172,7 @@ impl Quirks {
         clipping: true,
         shifting: true,
         jumping: true,
+        scrolling: false,
     };
 
     const SUPER_CHIP_MODERN: Self = Self {
@@ -177,6 +182,7 @@ impl Quirks {
         clipping: true,
         shifting: true,
         jumping: true,
+        scrolling: true,
     };
 
     const XO_CHIP: Self = Self {
@@ -186,6 +192,7 @@ impl Quirks {
         clipping: false,
         shifting: false,
         jumping: false,
+        scrolling: true,
     };
 }
 
@@ -640,6 +647,11 @@ impl Chip8 {
     }
 
     fn scroll_display(&mut self, dx: i8, dy: i8) {
+        let (dx, dy) = if !self.is_in_extended_mode && self.quirks.scrolling {
+            (dx * 2, dy * 2)
+        } else {
+            (dx, dy)
+        };
         let mut buf = [[PIXEL_OFF; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
         for (y, row) in buf.iter_mut().enumerate() {
             for (x, pixel) in row.iter_mut().enumerate() {
@@ -662,7 +674,7 @@ impl Chip8 {
         match Chip8::decode(opcode) {
             Ok(instruction) => self.execute(instruction),
             Err(DecodeError::InvalidSecondaryOpcode(code, secondary)) => panic!(
-                "Invalid opcode 0x{:x} (first opcode: 0x{:x}, secondary opcode: 0x{:x})",
+                "Invalid opcode {:0>4x} (first opcode: {:0>2x}, secondary opcode: {:0>2x})",
                 opcode, code, secondary
             ),
         }
