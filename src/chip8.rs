@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IndexedRandom};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use sdl2::{
     EventPump, event::Event, keyboard::Keycode, pixels::Color, rect::Point, render::Canvas,
 };
@@ -51,7 +51,7 @@ const UPDATES_PER_SECOND: u64 = 660;
 
 const FRAMES_PER_SECOND: u64 = 60;
 
-const ALLOWED_FILE_EXTENSIONS: &[&str] = &["ch8"];
+pub const ALLOWED_FILE_EXTENSIONS: &[&str] = &["ch8"];
 
 type Addr = u16;
 type Reg = u8;
@@ -106,6 +106,9 @@ pub struct Chip8 {
 
     /** Current system tick. */
     tick: u64,
+
+    /** RPL Flag Registers. Used to save the registers for the Super-Chip instruction */
+    rpl: [u8; REGISTERS_LEN],
 }
 
 /** Struct storing the differences in behaviour between the various Chip8 versions. */
@@ -155,6 +158,9 @@ enum DecodeError {
  */
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
+    /** Suspend execution */
+    Suspend,
+
     /** Scroll display `n` lines down. */
     ScrollDown(u8),
 
@@ -330,7 +336,7 @@ impl Chip8 {
         let rand = rng.random_range(0x0..=u8::MAX);
 
         Self {
-            registers: [0; REGISTERS_LEN],
+            registers: [0x0; REGISTERS_LEN],
             memory,
             ir: 0x0,
             pc: START_ADDR,
@@ -347,6 +353,7 @@ impl Chip8 {
             is_suspended: false,
             is_in_extended_mode: false,
             tick: 0,
+            rpl: [0x0; REGISTERS_LEN],
         }
     }
 
@@ -536,7 +543,7 @@ impl Chip8 {
         match Chip8::decode(opcode) {
             Ok(instruction) => self.execute(instruction),
             Err(DecodeError::InvalidSecondaryOpcode(code, secondary)) => panic!(
-                "Invalid opcode 0x{:x} (first opcode: {:x}, secondary opcode: {:x})",
+                "Invalid opcode 0x{:x} (first opcode: 0x{:x}, secondary opcode: 0x{:x})",
                 opcode, code, secondary
             ),
         }
@@ -559,6 +566,10 @@ impl Chip8 {
         let byte = get_bits(opcode, 0..8) as u8;
         Ok(match code {
             0x0 => match y {
+                0x0 => match n {
+                    0x0 => I::Suspend,
+                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                },
                 0xc => I::ScrollDown(n),
                 0xe => match n {
                     0x0 => I::Clear,
@@ -656,6 +667,7 @@ impl Chip8 {
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
         match instruction {
+            I::Suspend => self.is_suspended = true,
             I::ScrollDown(n) => self.scroll_display(0, n as i8),
             I::Clear => self.display_memory = [[0x0; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
             I::Return => self.ret(),
@@ -745,19 +757,14 @@ impl Chip8 {
             }
             I::Draw { x, y, n } => {
                 let (x, y) = (self.reg(x), self.reg(y));
-                let mut sprite = if n == 0 {
-                    vec![0x0; 32]
+                let (mut sprite, width) = if n == 0 {
+                    (vec![0x0; 32], 2)
                 } else {
-                    vec![0x0; n as usize]
+                    (vec![0x0; n as usize], 1)
                 };
-                sprite.copy_from_slice(
-                    &self.memory[self.ir as usize..(self.ir + sprite.len() as u16) as usize],
-                );
-                if sprite.len() == 32 {
-                    self.draw_hi_res_sprite(x, y, &sprite);
-                } else {
-                    self.draw_sprite(x, y, &sprite);
-                }
+                let (ir, len) = (self.ir as usize, sprite.len());
+                sprite.copy_from_slice(&self.memory[ir..ir + len]);
+                self.draw_sprite(x, y, &sprite, width);
             }
             I::SkipIfKeyPressed { x } => {
                 if self.is_key_down(self.reg(x)) {
@@ -779,11 +786,11 @@ impl Chip8 {
                 }
                 self.pc -= 2;
             }
-
             I::LoadRegisterIntoDt { x } => self.dt = self.reg(x),
             I::LoadRegisterIntoSt { x } => self.st = self.reg(x),
             I::AddIndex { x } => self.ir += self.reg(x) as u16,
             I::LoadDigitIndex { x } => self.ir = FONTSET_ADDR + self.reg(x) as u16 * 5,
+            I::LoadExtendedDigitIndex { x: _ } => todo!(),
             I::LoadBcd { x } => {
                 let vx = self.reg(x);
                 let idx = self.ir as usize;
@@ -791,22 +798,29 @@ impl Chip8 {
                 self.memory[idx + 1] = (vx / 10) % 10;
                 self.memory[idx + 2] = vx % 10;
             }
-
             I::StoreRegisters { x } => {
-                let x = x as usize;
+                let x = x as usize + 1;
                 let idx = self.ir as usize;
-                self.memory[idx..idx + x + 1].copy_from_slice(&self.registers[0..x + 1]);
+                self.memory[idx..idx + x].copy_from_slice(&self.registers[..x]);
                 if self.quirks.memory {
-                    self.ir += x as u16 + 1;
+                    self.ir += x as u16;
                 }
             }
             I::LoadRegisters { x } => {
-                let x = x as usize;
+                let x = x as usize + 1;
                 let idx = self.ir as usize;
-                self.registers[0..x + 1].copy_from_slice(&self.memory[idx..idx + x + 1]);
+                self.registers[..x].copy_from_slice(&self.memory[idx..idx + x]);
                 if self.quirks.memory {
-                    self.ir += x as u16 + 1;
+                    self.ir += x as u16;
                 }
+            }
+            I::StoreRegistersRPL { x } => {
+                let x = x as usize + 1;
+                self.rpl[..x].copy_from_slice(&self.registers[..x]);
+            }
+            I::LoadRegistersRPL { x } => {
+                let x = x as usize + 1;
+                self.registers[..x].copy_from_slice(&self.rpl[..x]);
             }
         }
     }
@@ -862,74 +876,72 @@ impl Chip8 {
         self.pc += 2;
     }
 
-    fn draw_sprite(&mut self, x: u8, y: u8, sprite: &[u8]) {
-        self.set_flag(0x0);
-        let (x, y) = (x as usize % DISPLAY_WIDTH, y as usize % DISPLAY_HEIGHT);
-        for (dy, row) in sprite.iter().enumerate() {
-            let mut is_row_collided = false;
-            for dx in 0..8 {
-                let (cur_x, cur_y) = if self.quirks.clipping {
-                    (x + dx, y + dy)
-                } else {
-                    ((x + dx) % DISPLAY_WIDTH, (y + dy) % DISPLAY_HEIGHT)
-                };
-                if cur_y >= DISPLAY_HEIGHT {
-                    is_row_collided = true;
-                    continue;
-                }
-                if cur_x >= DISPLAY_WIDTH {
-                    continue;
-                }
-                let pixel = row & (0x1 << (u8::BITS as usize - dx - 1)) != 0;
-                if pixel {
-                    if self.get_pixel(cur_x, cur_y) == PIXEL_ON {
-                        is_row_collided = true;
-                    }
-                    self.draw_pixel(cur_x, cur_y);
-                }
-            }
-            if is_row_collided {
-                if self.is_in_extended_mode {
-                    self.set_flag(self.reg(0xf) + 1);
-                } else {
-                    self.set_flag(0x1);
-                }
-            }
+    fn display_width(&self) -> usize {
+        if self.is_in_extended_mode {
+            DISPLAY_WIDTH
+        } else {
+            DISPLAY_WIDTH / 2
         }
     }
 
-    fn draw_hi_res_sprite(&mut self, x: u8, y: u8, sprite: &[u8]) {
-        self.set_flag(0x0);
-        let (x, y) = (x as usize % DISPLAY_WIDTH, y as usize % DISPLAY_HEIGHT);
-
-        for dy in 0..16 {
-            let row = ((sprite[dy * 2] as u16) << 8) | sprite[dy * 2 + 1] as u16;
-            for dx in 0..16 {
-                let (cur_x, cur_y) = if self.quirks.clipping {
-                    (x + dx, y + dy)
-                } else {
-                    ((x + dx) % DISPLAY_WIDTH, (y + dy) % DISPLAY_HEIGHT)
-                };
-                if cur_x >= DISPLAY_WIDTH || cur_y >= DISPLAY_HEIGHT {
-                    continue;
-                }
-                let pixel = row & (0x1 << (u16::BITS as usize - dx - 1)) != 0;
-                if pixel {
-                    if self.get_pixel(cur_x, cur_y) == PIXEL_ON {}
-                    self.draw_pixel(cur_x, cur_y);
-                }
-            }
+    fn display_height(&self) -> usize {
+        if self.is_in_extended_mode {
+            DISPLAY_HEIGHT
+        } else {
+            DISPLAY_HEIGHT / 2
         }
     }
 
-    /* TODO: Rewrite drawing function, to handle extended mode */
+    fn draw_sprite(&mut self, x: u8, y: u8, sprite: &[u8], width: usize) {
+        self.set_flag(0x0);
+        let (x, y) = (
+            x as usize % self.display_width(),
+            y as usize % self.display_height(),
+        );
+        let mut collided_rows = Vec::new();
+        for i in 0..sprite.len() * 8 {
+            let bit_index = 8 - (i % 8) - 1;
+            let byte_index = i / 8;
+            let (dx, dy) = (i % (width * 8), i / (width * 8));
+            let (cur_x, cur_y) = if self.quirks.clipping {
+                (x + dx, y + dy)
+            } else {
+                (
+                    (x + dx) % self.display_width(),
+                    (y + dy) % self.display_height(),
+                )
+            };
+            if cur_y >= self.display_height() {
+                if !collided_rows.contains(&dy) {
+                    collided_rows.push(dy);
+                }
+                continue;
+            }
+            if cur_x >= self.display_width() {
+                continue;
+            }
+            let pixel = sprite[byte_index] & (0x1 << bit_index) != 0;
+            if pixel {
+                if self.get_pixel(cur_x, cur_y) == PIXEL_ON && !collided_rows.contains(&dy) {
+                    collided_rows.push(dy);
+                }
+                self.draw_pixel(cur_x, cur_y);
+            }
+        }
+        if self.is_in_extended_mode {
+            self.set_flag(collided_rows.len() as u8);
+        } else {
+            self.set_flag((!collided_rows.is_empty()) as u8);
+        }
+    }
 
     fn get_pixel(&self, x: usize, y: usize) -> u32 {
-        if self.is_in_extended_mode {
-            self.display_memory[x][y]
+        let (x, y) = if self.is_in_extended_mode {
+            (x, y)
         } else {
-            self.display_memory[x * 2][y * 2]
-        }
+            (x * 2, y * 2)
+        };
+        self.display_memory[y][x]
     }
 
     fn draw_pixel(&mut self, x: usize, y: usize) {
@@ -939,11 +951,11 @@ impl Chip8 {
             /* If in low-res mode, pixels are 2x2 and coordinates for drawing are doubled */
             (x * 2, y * 2)
         };
-        self.display_memory[x][y] ^= PIXEL_ON;
+        self.display_memory[y][x] ^= PIXEL_ON;
         if !self.is_in_extended_mode {
-            self.display_memory[x + 1][y] ^= PIXEL_ON;
-            self.display_memory[x][y + 1] ^= PIXEL_ON;
-            self.display_memory[x + 1][y + 1] ^= PIXEL_ON;
+            self.display_memory[y + 1][x] ^= PIXEL_ON;
+            self.display_memory[y][x + 1] ^= PIXEL_ON;
+            self.display_memory[y + 1][x + 1] ^= PIXEL_ON;
         }
     }
 
@@ -956,37 +968,37 @@ impl Chip8 {
     }
 
     fn print_registers(&self) {
-        println!("\nPC: {:0>3x}, IR: {:0>3x}", self.pc, self.ir);
+        println!("\nPC: 0x{:0>3x}, IR: 0x{:0>3x}", self.pc, self.ir);
         println!(
-            "V0: {:0>2x}, V1: {:0>2x}, V2: {:0>2x}, V3: {:0>2x}",
+            "V0: 0x{:0>2x}, V1: 0x{:0>2x}, V2: 0x{:0>2x}, V3: 0x{:0>2x}",
             self.reg(0x0),
             self.reg(0x1),
             self.reg(0x2),
             self.reg(0x3)
         );
         println!(
-            "V4: {:0>2x}, V5: {:0>2x}, V6: {:0>2x}, V7: {:0>2x}",
+            "V4: 0x{:0>2x}, V5: 0x{:0>2x}, V6: 0x{:0>2x}, V7: 0x{:0>2x}",
             self.reg(0x4),
             self.reg(0x5),
             self.reg(0x6),
             self.reg(0x7)
         );
         println!(
-            "V8: {:0>2x}, V9: {:0>2x}, VA: {:0>2x}, VB: {:0>2x}",
+            "V8: 0x{:0>2x}, V9: 0x{:0>2x}, VA: 0x{:0>2x}, VB: 0x{:0>2x}",
             self.reg(0x8),
             self.reg(0x9),
             self.reg(0xa),
             self.reg(0xb)
         );
         println!(
-            "VC: {:0>2x}, VD: {:0>2x}, VE: {:0>2x}, VF: {:0>2x}",
+            "VC: 0x{:0>2x}, VD: 0x{:0>2x}, VE: 0x{:0>2x}, VF: 0x{:0>2x}",
             self.reg(0xc),
             self.reg(0xd),
             self.reg(0xe),
             self.reg(0xf)
         );
         println!(
-            "SP: {:0>2x}, DT: {:0>2x}, ST: {:0>2x}",
+            "SP: 0x{:0>2x}, DT: 0x{:0>2x}, ST: 0x{:0>2x}",
             self.sp, self.dt, self.st
         );
     }
