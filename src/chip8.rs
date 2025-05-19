@@ -369,14 +369,12 @@ impl Chip8 {
             if Instant::now() >= next_update {
                 next_update += duration_per_update;
 
-                if self.is_suspended {
-                    continue;
+                if !self.is_suspended {
+                    self.cycle();
                 }
-
-                self.cycle();
             }
 
-            thread::sleep(Duration::from_micros(100));
+            thread::sleep(Duration::from_micros(10));
         }
     }
 
@@ -417,7 +415,6 @@ impl Chip8 {
                     ..
                 } => {
                     if let Some(input) = keycode_to_input(keycode) {
-                        println!("Pushed {:?}", keycode);
                         self.input[input] = true;
                     } else {
                         match keycode {
@@ -439,7 +436,6 @@ impl Chip8 {
                     ..
                 } => {
                     if let Some(input) = keycode_to_input(keycode) {
-                        println!("Released {:?}", keycode);
                         self.input[input] = false;
                     }
                 }
@@ -452,6 +448,7 @@ impl Chip8 {
         canvas.set_draw_color(COLORS[0]);
         canvas.clear();
 
+        canvas.set_scale(PIXEL_SIZE as f32, PIXEL_SIZE as f32)?;
         for (y, row) in self.get_display_bitmap().iter().enumerate() {
             for (x, bitmap) in row.iter().enumerate() {
                 canvas.set_draw_color(COLORS[*bitmap as usize]);
@@ -808,12 +805,9 @@ impl Chip8 {
 
             if self.quirks.display_wait {
                 /* Wait until right after next screen refresh to draw sprite. */
-                let update_delta = Duration::from_micros(1_000_000 / UPDATES_PER_SECOND);
                 let updates_per_frame = UPDATES_PER_SECOND / FRAMES_PER_SECOND;
-                if ((self.next_display_interrupt - Instant::now()).div_duration_f32(update_delta)
-                    as usize)
-                    < updates_per_frame as usize - 2
-                {
+                /* `UPDATES_PER_SECOND` must be a multiple of `FRAMES_PER_SECOND` for this to be correct */
+                if self.tick % updates_per_frame != 0 {
                     self.pc -= 2;
                     return;
                 }
