@@ -27,129 +27,129 @@ fn get_bits(value: u16, bits: Range<u16>) -> u16 {
     (value & bitmask(bits)) >> start
 }
 
-/**
- * Vx means `registers[x]`
- */
+/// The opcodes are parsed as `0xXXXX`. Immediate values are denoted as `n`, `nn` and `nnn`,
+/// where multiple `n`:s should be interpreted as an unsigned integer, big endian. References
+/// to registers are denoted with `x` and `y`, and a register value is denoted as `Vx` or `Vy`.
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
-    /** Suspend execution */
+    /// `0x0000`: Suspend execution.
     Suspend,
 
-    /** Scroll display `n` lines down. */
+    /// `0x00cn`: Scroll display `n` lines down.
     ScrollDown(u8),
 
-    /** Clear the screen. */
+    /// `0x00e0`: Clear the screen.
     Clear,
 
-    /** Return from a subroutine. */
+    /// `0x00ee`: Return from a subroutine.
     Return,
 
-    /** Scroll display 4 pixels right. */
+    /// `0x00fb`: Scroll display 4 pixels right.
     ScrollRight,
 
-    /** Scroll display 4 pixels left. */
+    /// `0x00fc`: Scroll display 4 pixels left.
     ScrollLeft,
 
-    /** Exit CHIP Interpreter. */
+    /// `0x00fd`: Exit CHIP Interpreter.
     ExitChip,
 
-    /** Disable extended screen mode. */
+    /// `0x00fe`: Disable extended screen mode.
     DisableExtendedScreen,
 
-    /** Enable extended screen mode for full screen graphics. */
+    /// `0x00ff`: Enable extended screen mode for full screen graphics.
     EnableExtendedScreen,
 
-    /** Jump to location `addr`. */
+    /// `0x1nnn`: Jump to location `nnn`.
     Jump(Addr),
 
-    /** Call subroutine at `addr`. */
+    /// `0x2nnn`: Call subroutine at `nnn`.
     Call(Addr),
 
-    /** Skip next instruction if `Vx == v`. */
+    /// `0x3xnn`/`0x5xy0`: Skip next instruction if `Vx == v`.
     SkipIfEqual { x: Reg, v: Value },
 
-    /** Skip next instruction if `Vx != v`. */
+    /// `0x4xnn`/`0x9xy0`: Skip next instruction if `Vx != v`.
     SkipIfNotEqual { x: Reg, v: Value },
 
-    /** Set value of `Vx` to `v`. */
+    /// `0x6xnn`/`0x8xy0`: Set value of `Vx` to `v`.
     Load { x: Reg, v: Value },
 
-    /** Set value of `Vx` to `Vx + v`. Set `Vf = 1` if `v` is a register and `Vx + v > 255`. */
+    /// `0x7xnn`/`0x8xy4`: Set value of `Vx` to `Vx + v`. Set `Vf = 1` if `v` is a register and `Vx + v > 255`.
     Add { x: Reg, v: Value },
 
-    /** Set value of `Vx` to `Vx | Vy`. */
+    /// `0x8xy1`: Set value of `Vx` to `Vx | Vy`.
     Or { x: Reg, y: Reg },
 
-    /** Set value of `Vx` to `Vx & Vy`. */
+    /// `0x8xy2`: Set value of `Vx` to `Vx & Vy`.
     And { x: Reg, y: Reg },
 
-    /** Set value of `Vx` to `Vx ^ Vy`. */
+    /// `0x8xy3`: Set value of `Vx` to `Vx ^ Vy`.
     Xor { x: Reg, y: Reg },
 
-    /** Set `Vf = 1` if `Vx > Vy`. Then set value of `Vx` to `Vx - Vy`. */
+    /// `0x8xy5`: Set `Vf = 1` if `Vx > Vy`. Then set value of `Vx` to `Vx - Vy`.
     Sub { x: Reg, y: Reg },
 
-    /** Set `Vf = 1` if least significant bit of `Vx` is one. Then set value of `Vx` to `Vx >> 1`. */
+    /// `0x8xy6`: Set `Vf = 1` if least significant bit of `Vx` is one. Then set value of `Vx` to `Vx >> 1`.
     ShiftRight { x: Reg, y: Reg },
 
-    /** Set `Vf = 1` if `Vy > Vx`. Then set value of `Vx` to `Vx - Vy`. */
+    /// `0x8xy7`: Set `Vf = 1` if `Vy > Vx`. Then set value of `Vx` to `Vx - Vy`.
     SubNegative { x: Reg, y: Reg },
 
-    /**  Set `Vf = 1` if most significant bit of `Vx` is one. Then set value of `Vx` to `Vx << 1`. */
+    /// `0x8xye`: Set `Vf = 1` if most significant bit of `Vx` is one. Then set value of `Vx` to `Vx << 1`.
     ShiftLeft { x: Reg, y: Reg },
 
-    /** Set register `I` to `addr`. */
+    /// `0xannn`: Set register `I` to `addr`.
     LoadIndex(Addr),
 
-    /** Jump to location `addr + V0`. */
+    /// `0xbnnn`: Jump to location `addr + V0`.
     JumpOffset { x: Reg, addr: Addr },
 
-    /** Set `Vx` to a newly generated random byte ANDed with `mask`. */
+    /// `0xcxnn`: Set `Vx` to a newly generated random byte ANDed with `mask`.
     Random { x: Reg, mask: u8 },
 
-    /** Display an n-byte sprite starting at location `I` at `(Vx, Vy)`. Set `Vf = collision`. */
+    /// `0xdxyn`: Display an n-byte sprite starting at location `I` at `(Vx, Vy)`. Set `Vf = collision`.
     Draw { x: Reg, y: Reg, n: u8 },
 
-    /** Skip next instruction if key with the value in `Vx` is pressed. */
+    /// `0xex9e`: Skip next instruction if key with the value in `Vx` is pressed.
     SkipIfKeyPressed { x: Reg },
 
-    /** Skip next instruction if key with the value in `Vx` is NOT pressed. */
+    /// `0xexa1`: Skip next instruction if key with the value in `Vx` is NOT pressed.
     SkipIfKeyNotPressed { x: Reg },
 
-    /** Set `Vx = DT`. */
+    /// `0xfx07`: Set `Vx = DT`.
     LoadDtIntoRegister { x: Reg },
 
-    /** Wait for a key press, then store value of key in `Vx`. */
+    /// `0xfx0a`: Wait for a key press, then store value of key in `Vx`.
     LoadKeyPress { x: Reg },
 
-    /** Set `DT = Vx`. */
+    /// `0xfx15`: Set `DT = Vx`.
     LoadRegisterIntoDt { x: Reg },
 
-    /** Set `ST = Vx`. */
+    /// `0xfx18`: Set `ST = Vx`.
     LoadRegisterIntoSt { x: Reg },
 
-    /** Set `I` to `I + Vx`. */
+    /// `0xfx1e`: Set `I` to `I + Vx`.
     AddIndex { x: Reg },
 
-    /** Set `I` to location of digit sprite corresponding to value in `Vx`. */
-    LoadDigitIndex { x: Reg },
+    /// `0xfx29`: Set `I` to location of digit sprite corresponding to value in `Vx`.
+    LoadFont { x: Reg },
 
-    /** Set `I` to location of extended digit sprite corresponding to value in `Vx`. */
-    LoadExtendedDigitIndex { x: Reg },
+    /// `0xfx30`: Set `I` to location of extended digit sprite corresponding to value in `Vx`.
+    LoadHiResFont { x: Reg },
 
-    /** Store BCD representation of `Vx` in location `I`, `I+1` and `I+2`. */
+    /// `0xfx33`: Store BCD representation of `Vx` in location `I`, `I+1` and `I+2`.
     LoadBcd { x: Reg },
 
-    /** Store `V0` to `Vx` in memory, starting at location `I`. */
+    /// `0xfx55`: Store `V0` to `Vx` in memory, starting at location `I`.
     StoreRegisters { x: Reg },
 
-    /** Read registers `V0` to `Vx` from memory starting at location `I`. */
+    /// `0xfx65`: Read registers `V0` to `Vx` from memory starting at location `I`.
     LoadRegisters { x: Reg },
 
-    /** Store registers `V0` to `Vx` in RPL user flags (x <= 7). */
+    /// `0xfx75`: Store registers `V0` to `Vx` in RPL user flags (x <= 7).
     StoreRegistersRPL { x: Reg },
 
-    /** Load registers `V0` to `Vx` from RPL user flags (x <= 7). */
+    /// `0xfx85`: Load registers `V0` to `Vx` from RPL user flags (x <= 7).
     LoadRegistersRPL { x: Reg },
 }
 
@@ -249,8 +249,8 @@ impl Instruction {
                 0x15 => I::LoadRegisterIntoDt { x },
                 0x18 => I::LoadRegisterIntoSt { x },
                 0x1e => I::AddIndex { x },
-                0x29 => I::LoadDigitIndex { x },
-                0x30 => I::LoadExtendedDigitIndex { x },
+                0x29 => I::LoadFont { x },
+                0x30 => I::LoadHiResFont { x },
                 0x33 => I::LoadBcd { x },
                 0x55 => I::StoreRegisters { x },
                 0x65 => I::LoadRegisters { x },
