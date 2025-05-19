@@ -5,6 +5,7 @@ use crate::chip8::quirks::Quirks;
 use std::{
     fs::{self},
     io::{self, BufRead, Write},
+    ops::{BitXor, BitXorAssign},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant, SystemTime},
@@ -42,14 +43,13 @@ const FONTSET: [u8; FONTSET_LEN] = [
     0xf0, 0x80, 0xf0, 0x80, 0x80, /* F */
 ];
 const INPUT_KEYS_LEN: usize = 16;
+const AUDIO_BUFFER_LEN: usize = 16;
+const NUMBER_OF_PLANES: usize = 2;
 
 const DISPLAY_WIDTH: usize = 128;
 const DISPLAY_HEIGHT: usize = 64;
-const PIXEL_ON: u32 = 0xffffffff;
-const PIXEL_OFF: u32 = 0x00000000;
 const PIXEL_SIZE: u32 = 5;
-const FOREGROUND_COLOR: Color = Color::WHITE;
-const BACKGROUND_COLOR: Color = Color::BLACK;
+const COLORS: [Color; 4] = [Color::BLACK, Color::WHITE, Color::GRAY, Color::YELLOW];
 
 const START_ADDR: Addr = 0x200;
 
@@ -91,7 +91,7 @@ pub struct Chip8 {
     input_last_cycle: [bool; 16],
 
     /** Monochrome Display Memory. A memory buffer storing the graphics to display. */
-    display_memory: [[u32; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
+    display_memory: [[[Pixel; DISPLAY_WIDTH]; DISPLAY_HEIGHT]; NUMBER_OF_PLANES],
 
     /** Random Number Generator. Generates random numbers. */
     rng: SmallRng,
@@ -113,6 +113,15 @@ pub struct Chip8 {
 
     /** When the next display interrupt will be. Used for determining how long to halt when executing Draw instruction. */
     next_display_interrupt: Instant,
+
+    /** Audio Pattern Buffer. Stores audio pattern data. */
+    audio_buffer: [u8; AUDIO_BUFFER_LEN],
+
+    /** The current audio playback rate in Hz. */
+    audio_playback_rate: u32,
+
+    /** The selected drawing places stored as a bitmask. */
+    plane_mask: u8,
 }
 
 #[derive(Clone, ValueEnum, Debug)]
@@ -126,6 +135,31 @@ pub enum ChipType {
 #[derive(Debug)]
 pub enum Chip8Error {
     IndexOutOfRange(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pixel {
+    On,
+    Off,
+}
+
+impl BitXor for Pixel {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Pixel::On, Pixel::On) => Pixel::Off,
+            (Pixel::On, Pixel::Off) => Pixel::On,
+            (Pixel::Off, Pixel::On) => Pixel::On,
+            (Pixel::Off, Pixel::Off) => Pixel::Off,
+        }
+    }
+}
+
+impl BitXorAssign for Pixel {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        *self = *self ^ rhs;
+    }
 }
 
 pub fn find_roms(dir: &Path, search_recursively: bool) -> Vec<PathBuf> {
@@ -206,13 +240,16 @@ impl Default for Chip8 {
     }
 }
 
+fn audio_hz(vx: u8) -> u32 {
+    (4000.0 * 2f32.powf((vx as f32 - 64.0) / 48.0)) as u32
+}
+
 impl Chip8 {
     pub fn new(chip_type: ChipType) -> Self {
         let mut memory = [0; MEM_LEN];
 
-        for (dst, src) in memory[FONTSET_ADDR as usize..].iter_mut().zip(FONTSET) {
-            *dst = src;
-        }
+        memory[FONTSET_ADDR as usize..FONTSET_ADDR as usize + FONTSET_LEN]
+            .copy_from_slice(&FONTSET);
 
         let mut rng = SmallRng::seed_from_u64(
             SystemTime::now()
@@ -241,7 +278,7 @@ impl Chip8 {
             st: 0x0,
             input: [false; INPUT_KEYS_LEN],
             input_last_cycle: [false; INPUT_KEYS_LEN],
-            display_memory: [[PIXEL_OFF; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
+            display_memory: [[[Pixel::Off; DISPLAY_WIDTH]; DISPLAY_HEIGHT]; NUMBER_OF_PLANES],
             rng,
             rand,
             quirks,
@@ -251,6 +288,9 @@ impl Chip8 {
             tick: 0,
             rpl: [0x0; REGISTERS_LEN],
             next_display_interrupt: Instant::now(),
+            audio_buffer: [0x0; AUDIO_BUFFER_LEN],
+            audio_playback_rate: audio_hz(0),
+            plane_mask: 0b01,
         }
     }
 
@@ -291,7 +331,7 @@ impl Chip8 {
         let mut events = sdl_ctx.event_pump().unwrap();
 
         let mut canvas = window.into_canvas().build().unwrap();
-        canvas.set_draw_color(BACKGROUND_COLOR);
+        canvas.set_draw_color(COLORS[0]);
         canvas.clear();
         canvas.present();
 
@@ -323,7 +363,7 @@ impl Chip8 {
 
             if Instant::now() >= self.next_display_interrupt {
                 self.next_display_interrupt += duration_per_frame;
-                self.draw(&mut canvas).expect("rendering driver failed");
+                self.render(&mut canvas).expect("rendering driver failed");
             }
 
             if Instant::now() >= next_update {
@@ -377,6 +417,7 @@ impl Chip8 {
                     ..
                 } => {
                     if let Some(input) = keycode_to_input(keycode) {
+                        println!("Pushed {:?}", keycode);
                         self.input[input] = true;
                     } else {
                         match keycode {
@@ -398,6 +439,7 @@ impl Chip8 {
                     ..
                 } => {
                     if let Some(input) = keycode_to_input(keycode) {
+                        println!("Released {:?}", keycode);
                         self.input[input] = false;
                     }
                 }
@@ -406,28 +448,45 @@ impl Chip8 {
         }
     }
 
-    fn draw(&self, canvas: &mut Canvas<sdl2::video::Window>) -> Result<(), String> {
-        canvas.set_draw_color(BACKGROUND_COLOR);
+    fn render(&self, canvas: &mut Canvas<sdl2::video::Window>) -> Result<(), String> {
+        canvas.set_draw_color(COLORS[0]);
         canvas.clear();
-        canvas.set_draw_color(FOREGROUND_COLOR);
-        canvas.set_scale(PIXEL_SIZE as f32, PIXEL_SIZE as f32)?;
-        let points: Vec<_> = self
-            .display_memory
-            .iter()
-            .enumerate()
-            .flat_map(|(y, row)| {
-                row.iter().enumerate().filter_map(move |(x, pixel)| {
-                    if *pixel == PIXEL_ON {
-                        Some(Point::new(x as i32, y as i32))
-                    } else {
-                        None
-                    }
-                })
-            })
-            .collect();
-        canvas.draw_points(&points[..])?;
+
+        for (y, row) in self.get_display_bitmap().iter().enumerate() {
+            for (x, bitmap) in row.iter().enumerate() {
+                canvas.set_draw_color(COLORS[*bitmap as usize]);
+                canvas.draw_point(Point::new(x as i32, y as i32))?;
+            }
+        }
+
         canvas.present();
         Ok(())
+    }
+
+    fn get_display_bitmap(&self) -> [[u8; DISPLAY_WIDTH]; DISPLAY_HEIGHT] {
+        let mut output = [[0x0; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
+        for (y, row) in output.iter_mut().enumerate() {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                for (i, plane) in self.display_memory.iter().enumerate() {
+                    if plane[y][x] == Pixel::On {
+                        *pixel |= 0x1 << i;
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn get_selected_planes(&self) -> Vec<usize> {
+        (0..NUMBER_OF_PLANES)
+            .filter(|i| (0x1 << i) & self.plane_mask != 0)
+            .collect()
+    }
+
+    fn clear(&mut self) {
+        for plane in self.get_selected_planes() {
+            self.display_memory[plane] = [[Pixel::Off; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
+        }
     }
 
     fn scroll_display(&mut self, dx: i8, dy: i8) {
@@ -435,25 +494,27 @@ impl Chip8 {
             (false, ScrollingMode::Logical) => (dx * 2, dy * 2),
             _ => (dx, dy),
         };
-        let mut buf = [[PIXEL_OFF; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
-        for (y, row) in buf.iter_mut().enumerate() {
-            for (x, pixel) in row.iter_mut().enumerate() {
-                let (src_x, src_y) = (
-                    x.wrapping_add_signed(-dx as isize),
-                    y.wrapping_add_signed(-dy as isize),
-                );
-                *pixel = if src_x < DISPLAY_WIDTH && src_y < DISPLAY_HEIGHT {
-                    self.display_memory[src_y][src_x]
-                } else {
-                    PIXEL_OFF
-                };
+        for plane in self.get_selected_planes() {
+            let mut buf = [[Pixel::Off; DISPLAY_WIDTH]; DISPLAY_HEIGHT];
+            for (y, row) in buf.iter_mut().enumerate() {
+                for (x, pixel) in row.iter_mut().enumerate() {
+                    let (src_x, src_y) = (
+                        x.wrapping_add_signed(-dx as isize),
+                        y.wrapping_add_signed(-dy as isize),
+                    );
+                    *pixel = if src_x < DISPLAY_WIDTH && src_y < DISPLAY_HEIGHT {
+                        self.display_memory[plane][src_y][src_x]
+                    } else {
+                        Pixel::Off
+                    };
+                }
             }
+            self.display_memory[plane] = buf;
         }
-        self.display_memory = buf;
     }
 
     fn cycle(&mut self) {
-        let opcode = self.fetch_opcode(self.pc);
+        let opcode = self.get_be_u16(self.pc);
         match Instruction::decode(opcode) {
             Ok(instruction) => self.execute(instruction),
             Err(DecodeError::InvalidSecondaryOpcode(code, secondary)) => panic!(
@@ -465,9 +526,9 @@ impl Chip8 {
         self.tick += 1;
     }
 
-    fn fetch_opcode(&self, addr: Addr) -> Opcode {
+    fn get_be_u16(&self, addr: Addr) -> Opcode {
         let addr = addr as usize;
-        ((self.memory[addr] as Addr) << u8::BITS) | self.memory[addr + 1] as Addr
+        ((self.memory[addr] as u16) << u8::BITS) | self.memory[addr + 1] as u16
     }
 
     fn execute(&mut self, instruction: Instruction) {
@@ -475,7 +536,8 @@ impl Chip8 {
         match instruction {
             I::Suspend => self.is_suspended = true,
             I::ScrollDown(n) => self.scroll_display(0, n as i8),
-            I::Clear => self.display_memory = [[0x0; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
+            I::ScrollUp(n) => self.scroll_display(0, -(n as i8)),
+            I::Clear => self.clear(),
             I::Return => self.ret(),
             I::ScrollRight => self.scroll_display(4, 0),
             I::ScrollLeft => self.scroll_display(-4, 0),
@@ -492,6 +554,32 @@ impl Chip8 {
             I::SkipIfNotEqual { x, v } => {
                 if self.reg(x) != self.value(v) {
                     self.skip();
+                }
+            }
+            I::SaveRegisterRange { x, y } => {
+                let is_reversed = y < x;
+                let (start, end) = if is_reversed {
+                    (y as usize, x as usize + 1)
+                } else {
+                    (x as usize, y as usize + 1)
+                };
+                let (ir, len) = (self.ir as usize, end - start);
+                self.memory[ir..ir + len].copy_from_slice(&self.registers[start..end]);
+                if is_reversed {
+                    self.memory[ir..ir + len].reverse();
+                }
+            }
+            I::LoadRegisterRange { x, y } => {
+                let is_reversed = y < x;
+                let (start, end) = if is_reversed {
+                    (y as usize, x as usize + 1)
+                } else {
+                    (x as usize, y as usize + 1)
+                };
+                let (ir, len) = (self.ir as usize, end - start);
+                self.registers[start..end].copy_from_slice(&self.memory[ir..ir + len]);
+                if is_reversed {
+                    self.registers[start..end].reverse();
                 }
             }
             I::Load { x, v } => *self.reg_mut(x) = self.value(v),
@@ -561,31 +649,7 @@ impl Chip8 {
                 self.rand = buf[0];
                 self.set_reg(x, self.rand & mask);
             }
-            I::Draw { x, y, n } => {
-                let (x, y) = (self.reg(x), self.reg(y));
-                let (mut sprite, width) = if n == 0 {
-                    (vec![0x0; 32], 2)
-                } else {
-                    (vec![0x0; n as usize], 1)
-                };
-                let (ir, len) = (self.ir as usize, sprite.len());
-                sprite.copy_from_slice(&self.memory[ir..ir + len]);
-
-                if self.quirks.display_wait {
-                    /* Wait until right after next screen refresh to draw sprite. */
-                    let update_delta = Duration::from_micros(1_000_000 / UPDATES_PER_SECOND);
-                    let updates_per_frame = UPDATES_PER_SECOND / FRAMES_PER_SECOND;
-                    if ((self.next_display_interrupt - Instant::now())
-                        .div_duration_f32(update_delta) as usize)
-                        < updates_per_frame as usize - 2
-                    {
-                        self.pc -= 2;
-                        return;
-                    }
-                }
-
-                self.draw_sprite(x, y, &sprite, width);
-            }
+            I::Draw { x, y, n } => self.draw(x, y, n),
             I::SkipIfKeyPressed { x } => {
                 if self.is_key_down(self.reg(x)) {
                     self.skip();
@@ -596,6 +660,16 @@ impl Chip8 {
                     self.skip();
                 }
             }
+            I::LoadLongIndex => {
+                self.skip();
+                self.ir = self.get_be_u16(self.pc);
+            }
+            I::LoadAudio => {
+                let (ir, len) = (self.ir as usize, self.audio_buffer.len());
+                self.audio_buffer
+                    .copy_from_slice(&self.memory[ir..ir + len]);
+            }
+            I::SelectPlane { mask } => self.plane_mask = mask,
             I::LoadDtIntoRegister { x } => self.set_reg(x, self.dt),
             I::LoadKeyPress { x } => {
                 for (i, (pressed, pressed_last_cycle)) in
@@ -611,14 +685,17 @@ impl Chip8 {
             I::LoadRegisterIntoDt { x } => self.dt = self.reg(x),
             I::LoadRegisterIntoSt { x } => self.st = self.reg(x),
             I::AddIndex { x } => self.ir += self.reg(x) as u16,
-            I::LoadDigitIndex { x } => self.ir = FONTSET_ADDR + self.reg(x) as u16 * 5,
-            I::LoadExtendedDigitIndex { x: _ } => todo!(),
+            I::LoadFont { x } => self.ir = FONTSET_ADDR + self.reg(x) as u16 * 5,
+            I::LoadHiResFont { x: _ } => todo!(),
             I::LoadBcd { x } => {
                 let vx = self.reg(x);
                 let idx = self.ir as usize;
                 self.memory[idx] = vx / 100;
                 self.memory[idx + 1] = (vx / 10) % 10;
                 self.memory[idx + 2] = vx % 10;
+            }
+            I::SetPitch { x } => {
+                self.audio_playback_rate = audio_hz(self.reg(x));
             }
             I::StoreRegisters { x } => {
                 let x = x as usize + 1;
@@ -696,6 +773,10 @@ impl Chip8 {
 
     fn skip(&mut self) {
         self.pc += 2;
+        /* Skip the double wide instruction (if present) */
+        if self.get_be_u16(self.pc) == 0xf000 {
+            self.pc += 2;
+        }
     }
 
     fn display_width(&self) -> usize {
@@ -714,7 +795,35 @@ impl Chip8 {
         }
     }
 
-    fn draw_sprite(&mut self, x: u8, y: u8, sprite: &[u8], width: usize) {
+    fn draw(&mut self, x: Reg, y: Reg, sprite_len: u8) {
+        let (x, y) = (self.reg(x), self.reg(y));
+        for plane in self.get_selected_planes() {
+            let (mut sprite, width) = if sprite_len == 0 {
+                (vec![0x0; 32], 2)
+            } else {
+                (vec![0x0; sprite_len as usize], 1)
+            };
+            let (ir, len) = (self.ir as usize + sprite.len() * plane, sprite.len());
+            sprite.copy_from_slice(&self.memory[ir..ir + len]);
+
+            if self.quirks.display_wait {
+                /* Wait until right after next screen refresh to draw sprite. */
+                let update_delta = Duration::from_micros(1_000_000 / UPDATES_PER_SECOND);
+                let updates_per_frame = UPDATES_PER_SECOND / FRAMES_PER_SECOND;
+                if ((self.next_display_interrupt - Instant::now()).div_duration_f32(update_delta)
+                    as usize)
+                    < updates_per_frame as usize - 2
+                {
+                    self.pc -= 2;
+                    return;
+                }
+            }
+
+            self.draw_sprite(x, y, &sprite, width, plane);
+        }
+    }
+
+    fn draw_sprite(&mut self, x: u8, y: u8, sprite: &[u8], width: usize, plane: usize) {
         self.set_flag(0x0);
         let (x, y) = (
             x as usize % self.display_width(),
@@ -744,10 +853,11 @@ impl Chip8 {
             }
             let pixel = sprite[byte_index] & (0x1 << bit_index) != 0;
             if pixel {
-                if self.get_pixel(cur_x, cur_y) == PIXEL_ON && !collided_rows.contains(&dy) {
+                if self.get_pixel(cur_x, cur_y, plane) == Pixel::On && !collided_rows.contains(&dy)
+                {
                     collided_rows.push(dy);
                 }
-                self.draw_pixel(cur_x, cur_y);
+                self.draw_pixel(cur_x, cur_y, plane);
             }
         }
         if self.is_in_extended_mode {
@@ -757,27 +867,27 @@ impl Chip8 {
         }
     }
 
-    fn get_pixel(&self, x: usize, y: usize) -> u32 {
+    fn get_pixel(&self, x: usize, y: usize, plane: usize) -> Pixel {
         let (x, y) = if self.is_in_extended_mode {
             (x, y)
         } else {
             (x * 2, y * 2)
         };
-        self.display_memory[y][x]
+        self.display_memory[plane][y][x]
     }
 
-    fn draw_pixel(&mut self, x: usize, y: usize) {
+    fn draw_pixel(&mut self, x: usize, y: usize, plane: usize) {
         let (x, y) = if self.is_in_extended_mode {
             (x, y)
         } else {
             /* If in low-res mode, pixels are 2x2 and coordinates for drawing are doubled */
             (x * 2, y * 2)
         };
-        self.display_memory[y][x] ^= PIXEL_ON;
+        self.display_memory[plane][y][x] ^= Pixel::On;
         if !self.is_in_extended_mode {
-            self.display_memory[y + 1][x] ^= PIXEL_ON;
-            self.display_memory[y][x + 1] ^= PIXEL_ON;
-            self.display_memory[y + 1][x + 1] ^= PIXEL_ON;
+            self.display_memory[plane][y + 1][x] ^= Pixel::On;
+            self.display_memory[plane][y][x + 1] ^= Pixel::On;
+            self.display_memory[plane][y + 1][x + 1] ^= Pixel::On;
         }
     }
 

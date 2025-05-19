@@ -38,6 +38,9 @@ pub enum Instruction {
     /// `0x00cn`: Scroll display `n` lines down.
     ScrollDown(u8),
 
+    /// `0x00dn`: Scroll display `n` lines up.
+    ScrollUp(u8),
+
     /// `0x00e0`: Clear the screen.
     Clear,
 
@@ -70,6 +73,12 @@ pub enum Instruction {
 
     /// `0x4xnn`/`0x9xy0`: Skip next instruction if `Vx != v`.
     SkipIfNotEqual { x: Reg, v: Value },
+
+    /// `0x5xy2`: Save an inclusive range of registers `Vx`-`Vy` to memory starting at `I`.
+    SaveRegisterRange { x: Reg, y: Reg },
+
+    /// `0x5xy3`: Load an inclusive range of registers `Vx`-`Vy` to memory starting at `I`.
+    LoadRegisterRange { x: Reg, y: Reg },
 
     /// `0x6xnn`/`0x8xy0`: Set value of `Vx` to `v`.
     Load { x: Reg, v: Value },
@@ -116,6 +125,15 @@ pub enum Instruction {
     /// `0xexa1`: Skip next instruction if key with the value in `Vx` is NOT pressed.
     SkipIfKeyNotPressed { x: Reg },
 
+    /// `0xf000`: Advance `PC` 2 bytes and then load 16-bit value at `PC` into `I`.
+    LoadLongIndex,
+
+    /// `0xf002`: Load 16 bytes starting at `I` into the audio pattern buffer.
+    LoadAudio,
+
+    /// `0xfx01`: Select 0 or more drawing planes via bitmask (0 <= `x` < 4).
+    SelectPlane { mask: u8 },
+
     /// `0xfx07`: Set `Vx = DT`.
     LoadDtIntoRegister { x: Reg },
 
@@ -140,6 +158,9 @@ pub enum Instruction {
     /// `0xfx33`: Store BCD representation of `Vx` in location `I`, `I+1` and `I+2`.
     LoadBcd { x: Reg },
 
+    /// `0xfx3a`: Set the audio pattern playback rate to `4000 * 2 ** ((Vx - 64) / 48)` Hz.
+    SetPitch { x: Reg },
+
     /// `0xfx55`: Store `V0` to `Vx` in memory, starting at location `I`.
     StoreRegisters { x: Reg },
 
@@ -157,22 +178,23 @@ impl Instruction {
     pub fn decode(opcode: Opcode) -> Result<Instruction, DecodeError> {
         use Instruction as I;
         let code = get_bits(opcode, 12..16) as u8;
-        let addr = get_bits(opcode, 0..12);
+        let nnn = get_bits(opcode, 0..12);
+        let nn = get_bits(opcode, 0..8) as u8;
         let n = get_bits(opcode, 0..4) as u8;
         let x = get_bits(opcode, 8..12) as Reg;
         let y = get_bits(opcode, 4..8) as Reg;
-        let byte = get_bits(opcode, 0..8) as u8;
         Ok(match code {
             0x0 => match y {
                 0x0 => match n {
                     0x0 => I::Suspend,
-                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
                 },
                 0xc => I::ScrollDown(n),
+                0xd => I::ScrollUp(n),
                 0xe => match n {
                     0x0 => I::Clear,
                     0xe => I::Return,
-                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
                 },
                 0xf => match n {
                     0xb => I::ScrollRight,
@@ -180,34 +202,36 @@ impl Instruction {
                     0xd => I::ExitChip,
                     0xe => I::DisableExtendedScreen,
                     0xf => I::EnableExtendedScreen,
-                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
                 },
-                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
             },
-            0x1 => I::Jump(addr),
-            0x2 => I::Call(addr),
+            0x1 => I::Jump(nnn),
+            0x2 => I::Call(nnn),
             0x3 => I::SkipIfEqual {
                 x,
-                v: Value::Immediate(byte),
+                v: Value::Immediate(nn),
             },
             0x4 => I::SkipIfNotEqual {
                 x,
-                v: Value::Immediate(byte),
+                v: Value::Immediate(nn),
             },
             0x5 => match n {
                 0x0 => I::SkipIfEqual {
                     x,
                     v: Value::Register(y),
                 },
-                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                0x2 => I::SaveRegisterRange { x, y },
+                0x3 => I::LoadRegisterRange { x, y },
+                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
             },
             0x6 => I::Load {
                 x,
-                v: Value::Immediate(byte),
+                v: Value::Immediate(nn),
             },
             0x7 => I::Add {
                 x,
-                v: Value::Immediate(byte),
+                v: Value::Immediate(nn),
             },
             0x8 => match n {
                 0x0 => I::Load {
@@ -225,38 +249,44 @@ impl Instruction {
                 0x6 => I::ShiftRight { x, y },
                 0x7 => I::SubNegative { x, y },
                 0xe => I::ShiftLeft { x, y },
-                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
             },
             0x9 => match n {
                 0x0 => I::SkipIfNotEqual {
                     x,
                     v: Value::Register(y),
                 },
-                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
             },
-            0xa => I::LoadIndex(addr),
-            0xb => I::JumpOffset { x, addr },
-            0xc => I::Random { x, mask: byte },
+            0xa => I::LoadIndex(nnn),
+            0xb => I::JumpOffset { x, addr: nnn },
+            0xc => I::Random { x, mask: nn },
             0xd => I::Draw { x, y, n },
-            0xe => match byte {
+            0xe => match nn {
                 0x9e => I::SkipIfKeyPressed { x },
                 0xa1 => I::SkipIfKeyNotPressed { x },
-                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
             },
-            0xf => match byte {
-                0x07 => I::LoadDtIntoRegister { x },
-                0x0a => I::LoadKeyPress { x },
-                0x15 => I::LoadRegisterIntoDt { x },
-                0x18 => I::LoadRegisterIntoSt { x },
-                0x1e => I::AddIndex { x },
-                0x29 => I::LoadFont { x },
-                0x30 => I::LoadHiResFont { x },
-                0x33 => I::LoadBcd { x },
-                0x55 => I::StoreRegisters { x },
-                0x65 => I::LoadRegisters { x },
-                0x75 => I::StoreRegistersRPL { x },
-                0x85 => I::LoadRegistersRPL { x },
-                _ => return Err(DecodeError::InvalidSecondaryOpcode(code, byte)),
+            0xf => match nnn {
+                0x000 => I::LoadLongIndex,
+                0x002 => I::LoadAudio,
+                _ => match nn {
+                    0x01 => I::SelectPlane { mask: x },
+                    0x07 => I::LoadDtIntoRegister { x },
+                    0x0a => I::LoadKeyPress { x },
+                    0x15 => I::LoadRegisterIntoDt { x },
+                    0x18 => I::LoadRegisterIntoSt { x },
+                    0x1e => I::AddIndex { x },
+                    0x29 => I::LoadFont { x },
+                    0x30 => I::LoadHiResFont { x },
+                    0x33 => I::LoadBcd { x },
+                    0x3a => I::SetPitch { x },
+                    0x55 => I::StoreRegisters { x },
+                    0x65 => I::LoadRegisters { x },
+                    0x75 => I::StoreRegistersRPL { x },
+                    0x85 => I::LoadRegistersRPL { x },
+                    _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
+                },
             },
             _ => unreachable!("All 16-bit values are accounted for"),
         })
