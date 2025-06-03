@@ -108,7 +108,7 @@ pub enum Instruction {
     ShiftLeft { x: Reg, y: Reg },
 
     /// `0xannn`: Set register `I` to `addr`.
-    LoadIndex(Addr),
+    LoadIndex(u16),
 
     /// `0xbnnn`: Jump to location `addr + V0`.
     JumpOffset { x: Reg, addr: Addr },
@@ -125,8 +125,8 @@ pub enum Instruction {
     /// `0xexa1`: Skip next instruction if key with the value in `Vx` is NOT pressed.
     SkipIfKeyNotPressed { x: Reg },
 
-    /// `0xf000`: Advance `PC` 2 bytes and then load 16-bit value at `PC` into `I`.
-    LoadLongIndex,
+    /// `0xf000`: Load `addr` into `I`. If `addr` is `None` then advance `PC` 2 bytes and load 16-bit value at `PC` into `I`.
+    LoadLongIndex(Option<u16>),
 
     /// `0xf002`: Load 16 bytes starting at `I` into the audio pattern buffer.
     LoadAudio,
@@ -167,10 +167,10 @@ pub enum Instruction {
     /// `0xfx65`: Read registers `V0` to `Vx` from memory starting at location `I`.
     LoadRegisters { x: Reg },
 
-    /// `0xfx75`: Store registers `V0` to `Vx` in RPL user flags (x <= 7).
+    /// `0xfx75`: Store registers `V0` to `Vx` in RPL user flags.
     StoreRegistersRPL { x: Reg },
 
-    /// `0xfx85`: Load registers `V0` to `Vx` from RPL user flags (x <= 7).
+    /// `0xfx85`: Load registers `V0` to `Vx` from RPL user flags.
     LoadRegistersRPL { x: Reg },
 }
 
@@ -268,7 +268,7 @@ impl Instruction {
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
             },
             0xf => match nnn {
-                0x000 => I::LoadLongIndex,
+                0x000 => I::LoadLongIndex(None),
                 0x002 => I::LoadAudio,
                 _ => match nn {
                     0x01 => I::SelectPlane { mask: x },

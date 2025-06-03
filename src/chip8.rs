@@ -658,9 +658,12 @@ impl Chip8 {
                     self.skip();
                 }
             }
-            I::LoadLongIndex => {
+            I::LoadLongIndex(addr) => {
                 self.skip();
-                self.ir = self.get_be_u16(self.pc);
+                self.ir = match addr {
+                    Some(addr) => addr,
+                    None => self.get_be_u16(self.pc),
+                }
             }
             I::LoadAudio => {
                 let (ir, len) = (self.ir as usize, self.audio_buffer.len());
