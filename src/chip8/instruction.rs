@@ -1,4 +1,7 @@
-use std::ops::Range;
+use std::{
+    fmt::{self, Display},
+    ops::Range,
+};
 
 pub type Addr = u16;
 pub type Reg = u8;
@@ -288,11 +291,73 @@ impl Instruction {
                     _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
                 },
             },
-            _ => unreachable!("All 16-bit values are accounted for"),
+            _ => unreachable!("All 16 4-bit values (0x0-0xf) are accounted for"),
         })
     }
 }
 
+impl Display for Instruction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Instruction::Suspend => write!(f, "SUSP"),
+            Instruction::ScrollDown(n) => write!(f, "SCD\t{:#x}", n),
+            Instruction::ScrollUp(n) => write!(f, "SCU\t{:#x}", n),
+            Instruction::Clear => write!(f, "CLS"),
+            Instruction::Return => write!(f, "RET"),
+            Instruction::ScrollRight => write!(f, "SCR"),
+            Instruction::ScrollLeft => write!(f, "SCL"),
+            Instruction::ExitChip => write!(f, "EXIT"),
+            Instruction::DisableExtendedScreen => write!(f, "LOW"),
+            Instruction::EnableExtendedScreen => write!(f, "HIGH"),
+            Instruction::Jump(n) => write!(f, "JP\t{:#x}", n),
+            Instruction::Call(n) => write!(f, "CALL\t{:#x}", n),
+            Instruction::SkipIfEqual { x, v } => write!(f, "SE\tV{:x}\t{}", x, v),
+            Instruction::SkipIfNotEqual { x, v } => write!(f, "SNE\tV{:x}\t{}", x, v),
+            Instruction::SaveRegisterRange { x, y } => write!(f, "LD\t[I]\tV{:x}-{:x}", x, y),
+            Instruction::LoadRegisterRange { x, y } => write!(f, "LD\tV{:x}-{:x}\t[I]", x, y),
+            Instruction::Load { x, v } => write!(f, "LD\tV{:x}\t{}", x, v),
+            Instruction::Add { x, v } => write!(f, "ADD\tV{:x}\t{}", x, v),
+            Instruction::Or { x, y } => write!(f, "OR\tV{:x}\tV{:x}", x, y),
+            Instruction::And { x, y } => write!(f, "AND\tV{:x}\tV{:x}", x, y),
+            Instruction::Xor { x, y } => write!(f, "XOR\tV{:x}\tV{:x}", x, y),
+            Instruction::Sub { x, y } => write!(f, "SUB\tV{:x}\tV{:x}", x, y),
+            Instruction::ShiftRight { x, y } => write!(f, "SHR\tV{:x}\tV{:x}", x, y),
+            Instruction::SubNegative { x, y } => write!(f, "SUBN\tV{:x}\tV{:x}", x, y),
+            Instruction::ShiftLeft { x, y } => write!(f, "SHL\tV{:x}\tV{:x}", x, y),
+            Instruction::LoadIndex(n) => write!(f, "LD\tI\t{:#x}", n),
+            Instruction::JumpOffset { x, addr } => write!(f, "JP\tV{:x}\t{:#x}", x, addr),
+            Instruction::Random { x, mask } => write!(f, "RND\tV{:x}\t{:#x}", x, mask),
+            Instruction::Draw { x, y, n } => write!(f, "DRW\tV{:x}\tV{:x}\t{:#x}", x, y, n),
+            Instruction::SkipIfKeyPressed { x } => write!(f, "SKP\tV{:x}", x),
+            Instruction::SkipIfKeyNotPressed { x } => write!(f, "SKNP\tV{:x}", x),
+            Instruction::LoadLongIndex(nnn) => write!(f, "LD\tI\t{:#x}", nnn.unwrap_or(0x0)),
+            Instruction::LoadAudio => write!(f, "LDA"),
+            Instruction::SelectPlane { mask } => write!(f, "SLP\t{:#x}", mask),
+            Instruction::LoadDtIntoRegister { x } => write!(f, "LD\tV{:x}\tDT", x),
+            Instruction::LoadKeyPress { x } => write!(f, "LD\tV{:x}\tK", x),
+            Instruction::LoadRegisterIntoDt { x } => write!(f, "LD\tDT\tV{:x}", x),
+            Instruction::LoadRegisterIntoSt { x } => write!(f, "LD\tST\tV{:x}", x),
+            Instruction::AddIndex { x } => write!(f, "ADD\tI\tV{:x}", x),
+            Instruction::LoadFont { x } => write!(f, "LD\tF\tV{:x}", x),
+            Instruction::LoadHiResFont { x } => write!(f, "LD\tHF\tV{:x}", x),
+            Instruction::LoadBcd { x } => write!(f, "LD\tB\tV{:x}", x),
+            Instruction::SetPitch { x } => write!(f, "LD\tP\tV{:x}", x),
+            Instruction::StoreRegisters { x } => write!(f, "LD\t[I]\tV{:x}", x),
+            Instruction::LoadRegisters { x } => write!(f, "LD\tV{:x}\t[I]", x),
+            Instruction::StoreRegistersRPL { x } => write!(f, "LD\tR\tV{:x}", x),
+            Instruction::LoadRegistersRPL { x } => write!(f, "LD\tV{:x}\tR", x),
+        }
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Register(r) => write!(f, "V{:x}", r),
+            Value::Immediate(v) => write!(f, "{:#x}", v),
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

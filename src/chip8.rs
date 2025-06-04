@@ -514,7 +514,10 @@ impl Chip8 {
     fn cycle(&mut self) {
         let opcode = self.get_be_u16(self.pc);
         match Instruction::decode(opcode) {
-            Ok(instruction) => self.execute(instruction),
+            Ok(instruction) => {
+                println!("{}", instruction);
+                self.execute(instruction);
+            }
             Err(DecodeError::InvalidSecondaryOpcode(code, secondary)) => panic!(
                 "Invalid opcode {:0>4x} (first opcode: {:0>2x}, secondary opcode: {:0>2x})",
                 opcode, code, secondary
