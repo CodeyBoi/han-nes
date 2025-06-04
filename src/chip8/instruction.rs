@@ -108,7 +108,7 @@ pub enum Instruction {
     ShiftLeft { x: Reg, y: Reg },
 
     /// `0xannn`: Set register `I` to `addr`.
-    LoadIndex(u16),
+    LoadIndex(Addr),
 
     /// `0xbnnn`: Jump to location `addr + V0`.
     JumpOffset { x: Reg, addr: Addr },
@@ -126,7 +126,7 @@ pub enum Instruction {
     SkipIfKeyNotPressed { x: Reg },
 
     /// `0xf000`: Load `addr` into `I`. If `addr` is `None` then advance `PC` 2 bytes and load 16-bit value at `PC` into `I`.
-    LoadLongIndex(Option<u16>),
+    LoadLongIndex(Option<Addr>),
 
     /// `0xf002`: Load 16 bytes starting at `I` into the audio pattern buffer.
     LoadAudio,
