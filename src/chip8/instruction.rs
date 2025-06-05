@@ -60,10 +60,10 @@ pub enum Instruction {
     ExitChip,
 
     /// `0x00fe`: Disable extended screen mode.
-    DisableExtendedScreen,
+    DisableHighResolution,
 
     /// `0x00ff`: Enable extended screen mode for full screen graphics.
-    EnableExtendedScreen,
+    EnableHighResolution,
 
     /// `0x1nnn`: Jump to location `nnn`.
     Jump(Addr),
@@ -203,8 +203,8 @@ impl Instruction {
                     0xb => I::ScrollRight,
                     0xc => I::ScrollLeft,
                     0xd => I::ExitChip,
-                    0xe => I::DisableExtendedScreen,
-                    0xf => I::EnableExtendedScreen,
+                    0xe => I::DisableHighResolution,
+                    0xf => I::EnableHighResolution,
                     _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
                 },
                 _ => return Err(DecodeError::InvalidSecondaryOpcode(code, nn)),
@@ -307,8 +307,8 @@ impl Display for Instruction {
             Instruction::ScrollRight => write!(f, "SCR"),
             Instruction::ScrollLeft => write!(f, "SCL"),
             Instruction::ExitChip => write!(f, "EXIT"),
-            Instruction::DisableExtendedScreen => write!(f, "LOW"),
-            Instruction::EnableExtendedScreen => write!(f, "HIGH"),
+            Instruction::DisableHighResolution => write!(f, "LOW"),
+            Instruction::EnableHighResolution => write!(f, "HIGH"),
             Instruction::Jump(n) => write!(f, "JP\t{:#x}", n),
             Instruction::Call(n) => write!(f, "CALL\t{:#x}", n),
             Instruction::SkipIfEqual { x, v } => write!(f, "SE\tV{:x}\t{}", x, v),

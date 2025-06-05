@@ -104,7 +104,7 @@ pub struct Chip8 {
 
     is_running: bool,
     is_suspended: bool,
-    is_in_extended_mode: bool,
+    is_in_hires_mode: bool,
 
     /** Current system tick. */
     tick: u64,
@@ -285,7 +285,7 @@ impl Chip8 {
             quirks,
             is_running: false,
             is_suspended: false,
-            is_in_extended_mode: false,
+            is_in_hires_mode: false,
             tick: 0,
             rpl: [0x0; REGISTERS_LEN],
             next_display_interrupt: Instant::now(),
@@ -488,7 +488,7 @@ impl Chip8 {
     }
 
     fn scroll_display(&mut self, dx: i8, dy: i8) {
-        let (dx, dy) = match (self.is_in_extended_mode, self.quirks.scrolling) {
+        let (dx, dy) = match (self.is_in_hires_mode, self.quirks.scrolling) {
             (false, ScrollingMode::Logical) => (dx * 2, dy * 2),
             _ => (dx, dy),
         };
@@ -543,8 +543,8 @@ impl Chip8 {
             I::ScrollRight => self.scroll_display(4, 0),
             I::ScrollLeft => self.scroll_display(-4, 0),
             I::ExitChip => self.is_running = false,
-            I::DisableExtendedScreen => self.is_in_extended_mode = false,
-            I::EnableExtendedScreen => self.is_in_extended_mode = true,
+            I::DisableHighResolution => self.is_in_hires_mode = false,
+            I::EnableHighResolution => self.is_in_hires_mode = true,
             I::Jump(addr) => self.jump(addr),
             I::Call(addr) => self.call(addr),
             I::SkipIfEqual { x, v } => {
@@ -784,7 +784,7 @@ impl Chip8 {
     }
 
     fn display_width(&self) -> usize {
-        if self.is_in_extended_mode {
+        if self.is_in_hires_mode {
             DISPLAY_WIDTH
         } else {
             DISPLAY_WIDTH / 2
@@ -792,7 +792,7 @@ impl Chip8 {
     }
 
     fn display_height(&self) -> usize {
-        if self.is_in_extended_mode {
+        if self.is_in_hires_mode {
             DISPLAY_HEIGHT
         } else {
             DISPLAY_HEIGHT / 2
@@ -861,7 +861,7 @@ impl Chip8 {
                 self.draw_pixel(cur_x, cur_y, plane);
             }
         }
-        if self.is_in_extended_mode {
+        if self.is_in_hires_mode {
             self.set_flag(collided_rows.len() as u8);
         } else {
             self.set_flag((!collided_rows.is_empty()) as u8);
@@ -869,7 +869,7 @@ impl Chip8 {
     }
 
     fn get_pixel(&self, x: usize, y: usize, plane: usize) -> Pixel {
-        let (x, y) = if self.is_in_extended_mode {
+        let (x, y) = if self.is_in_hires_mode {
             (x, y)
         } else {
             (x * 2, y * 2)
@@ -878,14 +878,14 @@ impl Chip8 {
     }
 
     fn draw_pixel(&mut self, x: usize, y: usize, plane: usize) {
-        let (x, y) = if self.is_in_extended_mode {
+        let (x, y) = if self.is_in_hires_mode {
             (x, y)
         } else {
             /* If in low-res mode, pixels are 2x2 and coordinates for drawing are doubled */
             (x * 2, y * 2)
         };
         self.display_memory[plane][y][x] ^= Pixel::On;
-        if !self.is_in_extended_mode {
+        if !self.is_in_hires_mode {
             self.display_memory[plane][y + 1][x] ^= Pixel::On;
             self.display_memory[plane][y][x + 1] ^= Pixel::On;
             self.display_memory[plane][y + 1][x + 1] ^= Pixel::On;

@@ -57,8 +57,8 @@ pub fn encode(instr: Instruction) -> EncodedInstruction {
         I::ScrollRight => EncodedInstruction::Word(0x00fb),
         I::ScrollLeft => EncodedInstruction::Word(0x00fc),
         I::ExitChip => EncodedInstruction::Word(0x00fd),
-        I::DisableExtendedScreen => EncodedInstruction::Word(0x00fe),
-        I::EnableExtendedScreen => EncodedInstruction::Word(0x00ff),
+        I::DisableHighResolution => EncodedInstruction::Word(0x00fe),
+        I::EnableHighResolution => EncodedInstruction::Word(0x00ff),
         I::Jump(nnn) => cnnn(0x1, nnn),
         I::Call(nnn) => cnnn(0x2, nnn),
         I::SkipIfEqual { x, v } => match v {
