@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use chip8::Chip8;
 use clap::{CommandFactory, Parser, Subcommand};
 
+mod bits;
 mod chip8;
+mod nes;
 
 #[derive(Parser)]
 #[command(version, about)]

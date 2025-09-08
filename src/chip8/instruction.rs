@@ -1,7 +1,6 @@
-use std::{
-    fmt::{self, Display},
-    ops::Range,
-};
+use std::fmt::{self, Display};
+
+use crate::bits::get_bits;
 
 pub type Addr = u16;
 pub type Reg = u8;
@@ -15,19 +14,6 @@ pub enum Value {
 
 pub enum DecodeError {
     InvalidSecondaryOpcode(u8, u8),
-}
-
-fn bitmask(bits: Range<u16>) -> u16 {
-    let range = Range {
-        start: bits.start,
-        end: bits.end.min(16),
-    };
-    range.fold(0, |acc, i| acc | (0x1 << i))
-}
-
-fn get_bits(value: u16, bits: Range<u16>) -> u16 {
-    let start = bits.start;
-    (value & bitmask(bits)) >> start
 }
 
 /// The opcodes are parsed as `0xXXXX`. Immediate values are denoted as `n`, `nn` and `nnn`,
@@ -356,27 +342,5 @@ impl Display for Value {
             Value::Register(r) => write!(f, "V{:x}", r),
             Value::Immediate(v) => write!(f, "{:#x}", v),
         }
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_bitmask() {
-        assert_eq!(bitmask(0..5), 0b00011111);
-        assert_eq!(bitmask(1..6), 0b00111110);
-        assert_eq!(bitmask(3..13), 0b1111111111000);
-        assert_eq!(bitmask(0..16), 0b1111111111111111);
-    }
-
-    #[test]
-    fn test_get_bits() {
-        let v = 0b1111000011110000;
-
-        assert_eq!(get_bits(v, 0..5), 0b10000);
-        assert_eq!(get_bits(v, 2..6), 0b1100);
-        assert_eq!(get_bits(v, 0..8), 0b11110000);
-        assert_eq!(get_bits(v, 8..16), 0b11110000);
     }
 }
