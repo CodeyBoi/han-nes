@@ -3,13 +3,13 @@ use super::{Address, ShortAddress};
 pub enum Instruction {
     // Official instructions
     /// ADC: Adds the carry flag and a memory value to the accumulator.
-    AddWithCarry(Value),
+    AddWithCarry(MemoryValue),
 
     /// AND: Performs bitwise AND on accumulator with a memory value.
-    BitwiseAnd(Value),
+    BitwiseAnd(MemoryValue),
 
     /// ASL: Shifts all bits in value left, moving the value of each bit into the next bit. Bit 7 is shifted into the carry flag, and bit 0 is cleared.
-    ArithmeticShiftLeft(Value),
+    ArithmeticShiftLeft(MemoryValue),
 
     /// BCC: Add value to program counter if carry flag is clear.
     BranchIfCarryClear(i8),
@@ -21,7 +21,7 @@ pub enum Instruction {
     BranchIfEqual(i8),
 
     /// BIT: Modfies flags, but does not change memory or registers. Zero flag is set if accumulator & memory value != 0. Bits 7 and 6 are loaded directly into the negative and overflow flags.
-    BitTest(Value),
+    BitTest(MemoryValue),
 
     /// BMI: Add value to program counter if negative flag is set.
     BranchIfMinus(i8),
@@ -48,7 +48,7 @@ pub enum Instruction {
     ClearDecimal,
 }
 
-pub enum Value {
+pub enum MemoryValue {
     /// The value in the A register.
     Accumulator,
 

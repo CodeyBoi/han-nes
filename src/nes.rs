@@ -1,3 +1,5 @@
+use instruction::{Instruction, MemoryValue};
+
 use crate::bits::get_bit;
 
 pub type Register = u8;
@@ -11,11 +13,29 @@ struct Nes {
     memory: [u8; 2048],
 }
 
+#[derive(Clone, Copy, Debug)]
 enum Interrupt {
     Software,
     Hardware,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Cpu {
+    /// General purpose registers
+    acc: Register,
+    /// Index register X, the main register for accessing data with indexes.
+    x: Register,
+    y: Register,
+    /// Status register
+    p: Register,
+    /// Stack pointer
+    sp: Register,
+    /// Instructions pointer
+    pc: Address,
+    status: Status,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct Status {
     /// Used in additions, subtractions, comparisons and bit rotations. In additions and subtractions it acts as a 9th bit. Comparisons are a special case of subtraction, as they assume carry flag set and decimal flag clear, and do not save the result anywhere. For bit rotations, the bit that is rotated off is stored in the carry flag.
     carry: bool,
@@ -55,23 +75,90 @@ impl From<u8> for Status {
 }
 
 impl From<Status> for u8 {
-    fn from(value: Status) -> Self {}
-}
-
-struct Cpu {
-    /// General purpose registers
-    accumulator: Register,
-    /// Index register X, the main register for accessing data with indexes.
-    x: Register,
-    y: Register,
-    /// Status register
-    p: Register,
-    /// Stack pointer
-    sp: Register,
-    /// Instructions pointer
-    pc: Address,
+    fn from(value: Status) -> Self {
+        [
+            value.carry,
+            value.zero,
+            value.interrupt_disable,
+            value.decimal_mode,
+            match value.interrupt {
+                Interrupt::Software => true,
+                Interrupt::Hardware => false,
+            },
+            value.unused,
+            value.overflow,
+            value.negative,
+        ]
+        .iter()
+        .enumerate()
+        .fold(0, |acc, (i, v)| acc | ((*v as u8) << i))
+    }
 }
 
 impl Nes {
-    fn execute() {}
+    fn execute(&mut self, instruction: Instruction) {
+        use Instruction as I;
+        match instruction {
+            I::AddWithCarry(v) => self
+                .cpu
+                .add_to_acc(self.value(v) as u8 + self.cpu.status.carry as u8),
+            I::BitwiseAnd(v) => todo!(),
+            I::ArithmeticShiftLeft(v) => todo!(),
+            I::BranchIfCarryClear(_) => todo!(),
+            I::BranchIfCarrySet(_) => todo!(),
+            I::BranchIfEqual(_) => todo!(),
+            I::BitTest(v) => todo!(),
+            I::BranchIfMinus(_) => todo!(),
+            I::BranchIfNotEqual(_) => todo!(),
+            I::BranchIfPlus(_) => todo!(),
+            I::Break => todo!(),
+            I::BranchIfOverflowClear(_) => todo!(),
+            I::BranchIfOverflowSet(_) => todo!(),
+            I::ClearCarry => todo!(),
+            I::ClearDecimal => todo!(),
+        }
+    }
+
+    fn value(&self, val: MemoryValue) -> u16 {
+        use MemoryValue as M;
+        match val {
+            M::Accumulator => self.cpu.acc as u16,
+            M::Immediate(v) => v as u16,
+            M::ZeroPage(addr) => self.memory[addr as usize] as u16,
+            M::ZeroPageX(addr) => self.memory[addr.wrapping_add(self.cpu.x) as usize] as u16,
+            M::ZeroPageY(addr) => self.memory[addr.wrapping_add(self.cpu.y) as usize] as u16,
+            M::Absolute(addr) => self.memory[addr as usize] as u16,
+            M::AbsoluteX(addr) => self.memory[addr.wrapping_add(self.cpu.x as u16) as usize] as u16,
+            M::AbsoluteY(addr) => self.memory[addr.wrapping_add(self.cpu.y as u16) as usize] as u16,
+            M::Indirect(addr) => {
+                ((self.memory[addr as usize + 1] as u16) << 8) | self.memory[addr as usize] as u16
+            }
+            M::IndirectX(addr) => {
+                let idx = addr.wrapping_add(self.cpu.x) as usize;
+                ((self.memory[idx + 1] as u16) << 8) | self.memory[idx] as u16
+            }
+            M::IndirectY(addr) => {
+                let idx = addr.wrapping_add(self.cpu.y) as usize;
+                ((self.memory[idx + 1] as u16) << 8) | self.memory[idx] as u16
+            }
+        }
+    }
+}
+
+impl Cpu {
+    fn add_to_acc(&mut self, value: u8) {
+        let new_acc = self.acc.wrapping_add(value);
+        let carry = self.acc as u16 + value as u16 > u8::MAX.into();
+        let zero = new_acc == 0;
+        let overflow = (self.acc <= u8::MAX / 2) != (new_acc <= u8::MAX / 2);
+        let negative = (new_acc >> 7) != 0;
+        self.status = Status {
+            carry,
+            zero,
+            overflow,
+            negative,
+            ..self.status
+        };
+        self.acc = new_acc;
+    }
 }
