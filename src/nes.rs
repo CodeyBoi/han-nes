@@ -13,7 +13,7 @@ struct Nes {
     memory: [u8; 2048],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interrupt {
     Software,
     Hardware,
@@ -35,7 +35,7 @@ struct Cpu {
     status: Status,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Status {
     /// Used in additions, subtractions, comparisons and bit rotations. In additions and subtractions it acts as a 9th bit. Comparisons are a special case of subtraction, as they assume carry flag set and decimal flag clear, and do not save the result anywhere. For bit rotations, the bit that is rotated off is stored in the carry flag.
     carry: bool,
@@ -103,7 +103,7 @@ impl Default for Status {
             interrupt_disable: false,
             decimal_mode: false,
             interrupt: Interrupt::Software,
-            unused: false,
+            unused: true,
             overflow: false,
             negative: false,
         }
@@ -117,7 +117,7 @@ impl Nes {
             I::AddWithCarry(v) => self
                 .cpu
                 .add_acc(self.value(v) as u8 + self.cpu.status.carry as u8),
-            I::BitwiseAnd(v) => ,
+            I::BitwiseAnd(v) => todo!(),
             I::ArithmeticShiftLeft(v) => todo!(),
             I::BranchIfCarryClear(_) => todo!(),
             I::BranchIfCarrySet(_) => todo!(),
@@ -136,27 +136,38 @@ impl Nes {
 
     fn value(&self, val: MemoryValue) -> u16 {
         use MemoryValue as M;
-        match val {
-            M::Accumulator => self.cpu.acc as u16,
-            M::Immediate(v) => v as u16,
-            M::ZeroPage(addr) => self.memory[addr as usize] as u16,
-            M::ZeroPageX(addr) => self.memory[addr.wrapping_add(self.cpu.x) as usize] as u16,
-            M::ZeroPageY(addr) => self.memory[addr.wrapping_add(self.cpu.y) as usize] as u16,
-            M::Absolute(addr) => self.memory[addr as usize] as u16,
-            M::AbsoluteX(addr) => self.memory[addr.wrapping_add(self.cpu.x as u16) as usize] as u16,
-            M::AbsoluteY(addr) => self.memory[addr.wrapping_add(self.cpu.y as u16) as usize] as u16,
-            M::Indirect(addr) => {
-                ((self.memory[addr as usize + 1] as u16) << 8) | self.memory[addr as usize] as u16
-            }
-            M::IndirectX(addr) => {
-                let idx = addr.wrapping_add(self.cpu.x) as usize;
-                ((self.memory[idx + 1] as u16) << 8) | self.memory[idx] as u16
-            }
-            M::IndirectY(addr) => {
-                let idx = addr.wrapping_add(self.cpu.y) as usize;
-                ((self.memory[idx + 1] as u16) << 8) | self.memory[idx] as u16
-            }
+
+        if matches!(val, M::Accumulator) {
+            return self.cpu.acc as u16;
         }
+
+        let addr = match val {
+            M::ZeroPage(addr) => Some(addr as Address),
+            M::ZeroPageX(addr) => Some(addr.wrapping_add(self.cpu.x) as Address),
+            M::ZeroPageY(addr) => Some(addr.wrapping_add(self.cpu.y) as Address),
+            M::Absolute(addr) => Some(addr),
+            M::AbsoluteX(addr) => Some(addr.wrapping_add(self.cpu.x as Address)),
+            M::AbsoluteY(addr) => Some(addr.wrapping_add(self.cpu.y as Address)),
+            _ => None,
+        };
+
+        if let Some(addr) = addr {
+            return self.memory[addr as usize] as u16;
+        }
+
+        let addr = match val {
+            M::Indirect(addr) => addr,
+            M::IndirectX(addr) => addr.wrapping_add(self.cpu.x) as Address,
+            M::IndirectY(addr) => addr.wrapping_add(self.cpu.y) as Address,
+            _ => unreachable!("all cases should have been handled at this point"),
+        };
+
+        self.get_le_u16(addr)
+    }
+
+    fn get_le_u16(&self, addr: Address) -> u16 {
+        let addr = addr as usize;
+        ((self.memory[addr + 1] as u16) << 8) | self.memory[addr] as u16
     }
 }
 
@@ -194,7 +205,6 @@ impl Cpu {
             ..self.status
         };
         self.set_acc(new_acc);
-
     }
 }
 
@@ -214,8 +224,23 @@ impl Default for Cpu {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_set_acc() {
-        let mut cpu = C
+    fn test_acc() {
+        let mut cpu = Cpu::default();
+
+        cpu.add_acc(150);
+
+        assert!(!cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(cpu.status.overflow);
+        assert!(cpu.status.negative);
+
+        cpu.add_acc(106);
+        assert!(cpu.status.carry);
+        assert!(cpu.status.zero);
+        assert!(!cpu.status.overflow);
+        assert!(!cpu.status.negative);
     }
 }
