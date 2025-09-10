@@ -95,14 +95,29 @@ impl From<Status> for u8 {
     }
 }
 
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            carry: false,
+            zero: false,
+            interrupt_disable: false,
+            decimal_mode: false,
+            interrupt: Interrupt::Software,
+            unused: false,
+            overflow: false,
+            negative: false,
+        }
+    }
+}
+
 impl Nes {
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
         match instruction {
             I::AddWithCarry(v) => self
                 .cpu
-                .add_to_acc(self.value(v) as u8 + self.cpu.status.carry as u8),
-            I::BitwiseAnd(v) => todo!(),
+                .add_acc(self.value(v) as u8 + self.cpu.status.carry as u8),
+            I::BitwiseAnd(v) => ,
             I::ArithmeticShiftLeft(v) => todo!(),
             I::BranchIfCarryClear(_) => todo!(),
             I::BranchIfCarrySet(_) => todo!(),
@@ -146,19 +161,61 @@ impl Nes {
 }
 
 impl Cpu {
-    fn add_to_acc(&mut self, value: u8) {
-        let new_acc = self.acc.wrapping_add(value);
-        let carry = self.acc as u16 + value as u16 > u8::MAX.into();
-        let zero = new_acc == 0;
-        let overflow = (self.acc <= u8::MAX / 2) != (new_acc <= u8::MAX / 2);
-        let negative = (new_acc >> 7) != 0;
+    fn set_acc(&mut self, value: u8) {
+        self.acc = value;
+        let zero = self.acc == 0;
+        let negative = (self.acc >> 7) != 0;
         self.status = Status {
-            carry,
             zero,
-            overflow,
             negative,
             ..self.status
         };
-        self.acc = new_acc;
+    }
+
+    fn add_acc(&mut self, value: u8) {
+        let new_acc = self.acc.wrapping_add(value);
+        let carry = self.acc as u16 + value as u16 > u8::MAX.into();
+        let overflow = (self.acc <= u8::MAX / 2) != (new_acc <= u8::MAX / 2);
+        self.status = Status {
+            carry,
+            overflow,
+            ..self.status
+        };
+        self.set_acc(new_acc);
+    }
+
+    fn sub_acc(&mut self, value: u8) {
+        let new_acc = self.acc.wrapping_sub(value);
+        let carry = self.acc < value;
+        let overflow = (self.acc <= u8::MAX / 2) != (new_acc <= u8::MAX / 2);
+        self.status = Status {
+            carry,
+            overflow,
+            ..self.status
+        };
+        self.set_acc(new_acc);
+
+    }
+}
+
+impl Default for Cpu {
+    fn default() -> Self {
+        Self {
+            acc: 0,
+            x: 0,
+            y: 0,
+            p: 0,
+            sp: 0,
+            pc: 0,
+            status: Status::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_set_acc() {
+        let mut cpu = C
     }
 }
