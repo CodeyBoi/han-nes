@@ -192,6 +192,8 @@ impl Nes {
             B::Absolute(addr) => addr,
             B::AbsoluteX(addr) => addr.wrapping_add(self.cpu.x as Address),
             B::AbsoluteY(addr) => addr.wrapping_add(self.cpu.y as Address),
+            B::IndirectX(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.x) as Address),
+            B::IndirectY(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.y) as Address),
         };
         self.memory[addr as usize]
     }
@@ -211,6 +213,8 @@ impl Nes {
             B::Absolute(addr) => addr,
             B::AbsoluteX(addr) => addr.wrapping_add(self.cpu.x as Address),
             B::AbsoluteY(addr) => addr.wrapping_add(self.cpu.y as Address),
+            B::IndirectX(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.x) as Address),
+            B::IndirectY(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.y) as Address),
         };
         self.memory[addr as usize] = value;
     }
@@ -219,8 +223,6 @@ impl Nes {
         use WordLocation as W;
         let addr_of_addr = match location {
             W::Indirect(a) => a,
-            W::IndirectX(a) => a.wrapping_add(self.cpu.x) as Address,
-            W::IndirectY(a) => a.wrapping_add(self.cpu.y) as Address,
         };
         let addr = self.get_le_u16(addr_of_addr);
         self.get_le_u16(addr)
