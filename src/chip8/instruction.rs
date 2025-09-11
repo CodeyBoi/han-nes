@@ -1,6 +1,6 @@
 use std::fmt::{self, Display};
 
-use crate::bits::get_bits;
+use crate::bits::BitAddressable as _;
 
 pub type Addr = u16;
 pub type Reg = u8;
@@ -166,12 +166,12 @@ pub enum Instruction {
 impl Instruction {
     pub fn decode(opcode: Opcode) -> Result<Instruction, DecodeError> {
         use Instruction as I;
-        let code = get_bits(opcode, 12..16) as u8;
-        let nnn = get_bits(opcode, 0..12);
-        let nn = get_bits(opcode, 0..8) as u8;
-        let n = get_bits(opcode, 0..4) as u8;
-        let x = get_bits(opcode, 8..12) as Reg;
-        let y = get_bits(opcode, 4..8) as Reg;
+        let code = opcode.bits(12..16) as u8;
+        let nnn = opcode.bits(0..12);
+        let nn = opcode.bits(0..8) as u8;
+        let n = opcode.bits(0..4) as u8;
+        let x = opcode.bits(8..12) as Reg;
+        let y = opcode.bits(4..8) as Reg;
         Ok(match code {
             0x0 => match y {
                 0x0 => match n {

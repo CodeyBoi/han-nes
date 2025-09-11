@@ -1,6 +1,8 @@
-use instruction::{Instruction, MemoryValue};
+use std::ops::{Index, IndexMut};
 
-use crate::bits::get_bit;
+use instruction::{Instruction, MemoryByte, MemoryWord};
+
+use crate::bits::BitAddressable as _;
 
 pub type Register = u8;
 pub type Address = u16;
@@ -10,8 +12,10 @@ mod instruction;
 
 struct Nes {
     cpu: Cpu,
-    memory: [u8; 2048],
+    memory: [u8; MEMORY_SIZE],
 }
+
+const MEMORY_SIZE: usize = 0x800;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interrupt {
@@ -58,18 +62,18 @@ struct Status {
 impl From<u8> for Status {
     fn from(value: u8) -> Self {
         Self {
-            carry: get_bit(value, 0),
-            zero: get_bit(value, 1),
-            interrupt_disable: get_bit(value, 2),
-            decimal_mode: get_bit(value, 3),
-            interrupt: if get_bit(value, 4) {
+            carry: value.bit(0),
+            zero: value.bit(1),
+            interrupt_disable: value.bit(2),
+            decimal_mode: value.bit(3),
+            interrupt: if value.bit(4) {
                 Interrupt::Software
             } else {
                 Interrupt::Hardware
             },
-            unused: get_bit(value, 5),
-            overflow: get_bit(value, 6),
-            negative: get_bit(value, 7),
+            unused: value.bit(5),
+            overflow: value.bit(6),
+            negative: value.bit(7),
         }
     }
 }
@@ -110,19 +114,49 @@ impl Default for Status {
     }
 }
 
+impl Default for Nes {
+    fn default() -> Self {
+        Self {
+            cpu: Cpu::default(),
+            memory: [0; MEMORY_SIZE],
+        }
+    }
+}
+
 impl Nes {
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
         match instruction {
-            I::AddWithCarry(v) => self
-                .cpu
-                .add_acc(self.value(v) as u8 + self.cpu.status.carry as u8),
-            I::BitwiseAnd(v) => todo!(),
-            I::ArithmeticShiftLeft(v) => todo!(),
-            I::BranchIfCarryClear(_) => todo!(),
-            I::BranchIfCarrySet(_) => todo!(),
+            I::AddWithCarry(b) => {
+                self.cpu.acc_add(self.read(b) + self.cpu.status.carry as u8);
+            }
+            I::BitwiseAnd(b) => {
+                self.cpu.acc_set(self.cpu.acc & self.read(b));
+            }
+            I::ArithmeticShiftLeft(b) => {
+                let value = self.read(b);
+                let shifted = value << 1;
+                self.cpu.status = Status {
+                    carry: value.bit(7),
+                    zero: shifted == 0,
+                    negative: shifted.bit(7),
+                    ..self.cpu.status
+                };
+                self.write(b, value);
+                self.write(b, shifted);
+            }
+            I::BranchIfCarryClear(offset) => {
+                if !self.cpu.status.carry {
+                    self.branch(offset);
+                }
+            }
+            I::BranchIfCarrySet(offset) => {
+                if self.cpu.status.carry {
+                    self.branch(offset);
+                }
+            }
             I::BranchIfEqual(_) => todo!(),
-            I::BitTest(v) => todo!(),
+            I::BitTest(b) => todo!(),
             I::BranchIfMinus(_) => todo!(),
             I::BranchIfNotEqual(_) => todo!(),
             I::BranchIfPlus(_) => todo!(),
@@ -134,34 +168,47 @@ impl Nes {
         }
     }
 
-    fn value(&self, val: MemoryValue) -> u16 {
-        use MemoryValue as M;
-
-        if matches!(val, M::Accumulator) {
-            return self.cpu.acc as u16;
-        }
-
-        let addr = match val {
-            M::ZeroPage(addr) => Some(addr as Address),
-            M::ZeroPageX(addr) => Some(addr.wrapping_add(self.cpu.x) as Address),
-            M::ZeroPageY(addr) => Some(addr.wrapping_add(self.cpu.y) as Address),
-            M::Absolute(addr) => Some(addr),
-            M::AbsoluteX(addr) => Some(addr.wrapping_add(self.cpu.x as Address)),
-            M::AbsoluteY(addr) => Some(addr.wrapping_add(self.cpu.y as Address)),
-            _ => None,
+    fn read(&self, location: MemoryByte) -> u8 {
+        use MemoryByte as B;
+        let addr = match location {
+            B::Accumulator => return self.cpu.acc,
+            B::Immediate(v) => return v,
+            B::ZeroPage(addr) => addr as Address,
+            B::ZeroPageX(addr) => addr.wrapping_add(self.cpu.x) as Address,
+            B::ZeroPageY(addr) => addr.wrapping_add(self.cpu.y) as Address,
+            B::Absolute(addr) => addr,
+            B::AbsoluteX(addr) => addr.wrapping_add(self.cpu.x as Address),
+            B::AbsoluteY(addr) => addr.wrapping_add(self.cpu.y as Address),
         };
+        self.memory[addr as usize]
+    }
 
-        if let Some(addr) = addr {
-            return self.memory[addr as usize] as u16;
-        }
-
-        let addr = match val {
-            M::Indirect(addr) => addr,
-            M::IndirectX(addr) => addr.wrapping_add(self.cpu.x) as Address,
-            M::IndirectY(addr) => addr.wrapping_add(self.cpu.y) as Address,
-            _ => unreachable!("all cases should have been handled at this point"),
+    fn write(&mut self, location: MemoryByte, value: u8) {
+        use MemoryByte as B;
+        let addr = match location {
+            B::Accumulator => {
+                self.cpu.acc_set(value);
+                return;
+            }
+            B::Immediate(v) => panic!("tried to write to immediate value {}", v),
+            B::ZeroPage(addr) => addr as Address,
+            B::ZeroPageX(addr) => addr.wrapping_add(self.cpu.x) as Address,
+            B::ZeroPageY(addr) => addr.wrapping_add(self.cpu.y) as Address,
+            B::Absolute(addr) => addr,
+            B::AbsoluteX(addr) => addr.wrapping_add(self.cpu.x as Address),
+            B::AbsoluteY(addr) => addr.wrapping_add(self.cpu.y as Address),
         };
+        self.memory[addr as usize] = value;
+    }
 
+    fn read_word(&self, location: MemoryWord) -> u16 {
+        use MemoryWord as W;
+        let addr_of_addr = match location {
+            W::Indirect(a) => a,
+            W::IndirectX(a) => a.wrapping_add(self.cpu.x) as Address,
+            W::IndirectY(a) => a.wrapping_add(self.cpu.y) as Address,
+        };
+        let addr = self.get_le_u16(addr_of_addr);
         self.get_le_u16(addr)
     }
 
@@ -169,42 +216,44 @@ impl Nes {
         let addr = addr as usize;
         ((self.memory[addr + 1] as u16) << 8) | self.memory[addr] as u16
     }
+
+    fn branch(&mut self, offset: i8) {
+        self.cpu.pc = self.cpu.pc.wrapping_add_signed(offset as i16);
+    }
 }
 
 impl Cpu {
-    fn set_acc(&mut self, value: u8) {
-        self.acc = value;
-        let zero = self.acc == 0;
-        let negative = (self.acc >> 7) != 0;
+    fn acc_set(&mut self, value: u8) {
+        let zero = value == 0;
+        let negative = value.bit(7);
         self.status = Status {
             zero,
             negative,
             ..self.status
         };
+        self.acc = value;
     }
 
-    fn add_acc(&mut self, value: u8) {
-        let new_acc = self.acc.wrapping_add(value);
-        let carry = self.acc as u16 + value as u16 > u8::MAX.into();
-        let overflow = (self.acc <= u8::MAX / 2) != (new_acc <= u8::MAX / 2);
+    fn acc_add(&mut self, value: u8) {
+        let (new_acc, carry) = self.acc.overflowing_add(value);
+        let (_, overflow) = (self.acc as i8).overflowing_add_unsigned(value);
         self.status = Status {
             carry,
             overflow,
             ..self.status
         };
-        self.set_acc(new_acc);
+        self.acc_set(new_acc);
     }
 
-    fn sub_acc(&mut self, value: u8) {
-        let new_acc = self.acc.wrapping_sub(value);
-        let carry = self.acc < value;
-        let overflow = (self.acc <= u8::MAX / 2) != (new_acc <= u8::MAX / 2);
+    fn acc_sub(&mut self, value: u8) {
+        let (new_acc, carry) = self.acc.overflowing_sub(value);
+        let (_, overflow) = (self.acc as i8).overflowing_sub_unsigned(value);
         self.status = Status {
             carry,
             overflow,
             ..self.status
         };
-        self.set_acc(new_acc);
+        self.acc_set(new_acc);
     }
 }
 
@@ -227,20 +276,129 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_acc() {
+    fn test_acc_add() {
         let mut cpu = Cpu::default();
 
-        cpu.add_acc(150);
-
+        cpu.acc_set(0);
+        cpu.acc_add(150);
         assert!(!cpu.status.carry);
         assert!(!cpu.status.zero);
         assert!(cpu.status.overflow);
         assert!(cpu.status.negative);
 
-        cpu.add_acc(106);
+        cpu.acc_add(106);
         assert!(cpu.status.carry);
         assert!(cpu.status.zero);
         assert!(!cpu.status.overflow);
         assert!(!cpu.status.negative);
+
+        cpu.acc_set(250);
+        cpu.acc_add(10);
+        assert!(cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(!cpu.status.overflow);
+        assert!(!cpu.status.negative);
+
+        cpu.acc_set(120);
+        cpu.acc_add(136);
+        assert!(cpu.status.carry);
+        assert!(cpu.status.zero);
+        assert!(cpu.status.overflow);
+        assert!(!cpu.status.negative);
+
+        cpu.acc_set(i8::MAX as u8);
+        cpu.acc_add(1);
+        assert!(!cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(cpu.status.overflow);
+        assert!(cpu.status.negative);
+    }
+
+    #[test]
+    fn test_acc_sub() {
+        let mut cpu = Cpu::default();
+
+        cpu.acc_set(0);
+        cpu.acc_sub(1);
+        assert!(cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(!cpu.status.overflow);
+        assert!(cpu.status.negative);
+
+        cpu.acc_set(5);
+        cpu.acc_sub(10);
+        assert!(cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(!cpu.status.overflow);
+        assert!(cpu.status.negative);
+
+        assert_eq!(-1i8 as u8, 0xff);
+        cpu.acc_set(-1i8 as u8);
+        cpu.acc_sub(150);
+        assert!(!cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(cpu.status.overflow);
+        assert!(!cpu.status.negative);
+
+        cpu.acc_set(120);
+        cpu.acc_sub(120);
+        assert!(!cpu.status.carry);
+        assert!(cpu.status.zero);
+        assert!(!cpu.status.overflow);
+        assert!(!cpu.status.negative);
+
+        cpu.acc_set(150);
+        cpu.acc_sub(150);
+        assert!(!cpu.status.carry);
+        assert!(cpu.status.zero);
+        assert!(cpu.status.overflow);
+        assert!(!cpu.status.negative);
+
+        cpu.acc_set(120);
+        cpu.acc_sub(121);
+        assert!(cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(!cpu.status.overflow);
+        assert!(cpu.status.negative);
+
+        cpu.acc_set(150);
+        cpu.acc_sub(151);
+        assert!(cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(cpu.status.overflow);
+        assert!(cpu.status.negative);
+
+        cpu.acc_set(i8::MIN as u8);
+        cpu.acc_sub(1);
+        assert!(!cpu.status.carry);
+        assert!(!cpu.status.zero);
+        assert!(cpu.status.overflow);
+        assert!(!cpu.status.negative);
+    }
+
+    #[test]
+    fn test_add_with_carry() {
+        use Instruction as I;
+        use MemoryByte as B;
+        let mut nes = Nes::default();
+        let addr = 0x10;
+        let mem_value = 0x8;
+
+        nes.write(B::ZeroPage(addr), mem_value);
+        assert_eq!(nes.read(B::ZeroPage(addr)), mem_value);
+
+        nes.cpu.acc_set(0);
+        nes.execute(I::AddWithCarry(B::Immediate(200)));
+        assert_eq!(nes.read(B::Accumulator), 200);
+        assert!(!nes.cpu.status.carry);
+
+        nes.execute(I::AddWithCarry(B::Immediate(100)));
+        assert_eq!(nes.read(B::Accumulator), 200u8.wrapping_add(100));
+        assert!(nes.cpu.status.carry);
+
+        let old_acc = nes.read(B::Accumulator);
+        nes.execute(I::AddWithCarry(B::ZeroPage(addr)));
+        assert_eq!(nes.read(B::Accumulator), old_acc + mem_value + 1);
+        assert!(!nes.cpu.status.carry);
     }
 }

@@ -1,15 +1,17 @@
 use super::{Address, ShortAddress};
 
+/// Info about 6502 instructions have been taken from https://www.nesdev.org/wiki/Instruction_reference.
+#[derive(Debug)]
 pub enum Instruction {
     // Official instructions
     /// ADC: Adds the carry flag and a memory value to the accumulator.
-    AddWithCarry(MemoryValue),
+    AddWithCarry(MemoryByte),
 
     /// AND: Performs bitwise AND on accumulator with a memory value.
-    BitwiseAnd(MemoryValue),
+    BitwiseAnd(MemoryByte),
 
     /// ASL: Shifts all bits in value left, moving the value of each bit into the next bit. Bit 7 is shifted into the carry flag, and bit 0 is cleared.
-    ArithmeticShiftLeft(MemoryValue),
+    ArithmeticShiftLeft(MemoryByte),
 
     /// BCC: Add value to program counter if carry flag is clear.
     BranchIfCarryClear(i8),
@@ -21,7 +23,7 @@ pub enum Instruction {
     BranchIfEqual(i8),
 
     /// BIT: Modfies flags, but does not change memory or registers. Zero flag is set if accumulator & memory value != 0. Bits 7 and 6 are loaded directly into the negative and overflow flags.
-    BitTest(MemoryValue),
+    BitTest(MemoryByte),
 
     /// BMI: Add value to program counter if negative flag is set.
     BranchIfMinus(i8),
@@ -48,7 +50,9 @@ pub enum Instruction {
     ClearDecimal,
 }
 
-pub enum MemoryValue {
+/// 6502 Addressing Modes. Defines different possible formats for fetching instructions arguments. More info about this can be found at https://www.nesdev.org/obelisk-6502-guide/addressing.html.
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryByte {
     /// The value in the A register.
     Accumulator,
 
@@ -72,7 +76,10 @@ pub enum MemoryValue {
 
     /// Same as Absolute, but the Y register is added to the address beforehand.
     AbsoluteY(Address),
+}
 
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryWord {
     /// Reads the two bytes at address (little-endian).
     Indirect(Address),
 
