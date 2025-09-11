@@ -1,6 +1,6 @@
 use std::ops::{Index, IndexMut};
 
-use instruction::{Instruction, MemoryByte, MemoryWord};
+use instruction::{ByteLocation, Instruction, WordLocation};
 
 use crate::bits::BitAddressable as _;
 
@@ -155,8 +155,20 @@ impl Nes {
                     self.branch(offset);
                 }
             }
-            I::BranchIfEqual(_) => todo!(),
-            I::BitTest(b) => todo!(),
+            I::BranchIfEqual(offset) => {
+                if self.cpu.status.zero {
+                    self.branch(offset);
+                }
+            }
+            I::BitTest(b) => {
+                let value = self.read(b);
+                self.cpu.status = Status {
+                    zero: (self.cpu.acc & value) == 0,
+                    overflow: value.bit(6),
+                    negative: value.bit(7),
+                    ..self.cpu.status
+                };
+            }
             I::BranchIfMinus(_) => todo!(),
             I::BranchIfNotEqual(_) => todo!(),
             I::BranchIfPlus(_) => todo!(),
@@ -168,8 +180,9 @@ impl Nes {
         }
     }
 
-    fn read(&self, location: MemoryByte) -> u8 {
-        use MemoryByte as B;
+    /// Fetches the byte located at `location`. Used for fetching the actual argument values for instructions.
+    fn read(&self, location: ByteLocation) -> u8 {
+        use ByteLocation as B;
         let addr = match location {
             B::Accumulator => return self.cpu.acc,
             B::Immediate(v) => return v,
@@ -183,14 +196,15 @@ impl Nes {
         self.memory[addr as usize]
     }
 
-    fn write(&mut self, location: MemoryByte, value: u8) {
-        use MemoryByte as B;
+    /// Modifies the byte located at `location`. Used in instructions which modify their arguments (e.g. ASL - Arithmetic Left Shift).
+    fn write(&mut self, location: ByteLocation, value: u8) {
+        use ByteLocation as B;
         let addr = match location {
             B::Accumulator => {
                 self.cpu.acc_set(value);
                 return;
             }
-            B::Immediate(v) => panic!("tried to write to immediate value {}", v),
+            B::Immediate(v) => panic!("tried to write to immediate value #{:X}", v),
             B::ZeroPage(addr) => addr as Address,
             B::ZeroPageX(addr) => addr.wrapping_add(self.cpu.x) as Address,
             B::ZeroPageY(addr) => addr.wrapping_add(self.cpu.y) as Address,
@@ -201,8 +215,8 @@ impl Nes {
         self.memory[addr as usize] = value;
     }
 
-    fn read_word(&self, location: MemoryWord) -> u16 {
-        use MemoryWord as W;
+    fn read_word(&self, location: WordLocation) -> u16 {
+        use WordLocation as W;
         let addr_of_addr = match location {
             W::Indirect(a) => a,
             W::IndirectX(a) => a.wrapping_add(self.cpu.x) as Address,
@@ -378,8 +392,8 @@ mod tests {
 
     #[test]
     fn test_add_with_carry() {
+        use ByteLocation as B;
         use Instruction as I;
-        use MemoryByte as B;
         let mut nes = Nes::default();
         let addr = 0x10;
         let mem_value = 0x8;
