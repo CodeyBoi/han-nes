@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use instruction::{ByteLocation, Instruction, WordLocation};
+use instruction::{ByteLocation, Instruction, JumpAddress};
 
 use crate::bits::BitAddressable;
 
@@ -146,13 +146,7 @@ impl Nes {
             I::ArithmeticShiftLeft(b) => {
                 let value = self.read(b);
                 let shifted = value << 1;
-                self.cpu.status = Status {
-                    carry: value.bit(7),
-                    zero: shifted == 0,
-                    negative: shifted.bit(7),
-                    ..self.cpu.status
-                };
-                self.write(b, value);
+                self.cpu.status.carry = value.bit(7);
                 self.write(b, shifted);
             }
             I::BranchIfCarryClear(offset) => {
@@ -190,6 +184,50 @@ impl Nes {
             I::BranchIfOverflowSet(offset) => self.branch(offset, self.cpu.status.overflow),
             I::ClearCarry => self.cpu.status.carry = false,
             I::ClearDecimal => self.cpu.status.decimal_mode = false,
+            I::ClearInterruptDisable => self.cpu.status.interrupt_disable = false,
+            I::ClearOverflow => self.cpu.status.overflow = false,
+            I::CompareAcc(b) => self.cpu.status = self.compare(self.cpu.acc, self.read(b)),
+            I::CompareX(b) => self.cpu.status = self.compare(self.cpu.x, self.read(b)),
+            I::CompareY(b) => self.cpu.status = self.compare(self.cpu.y, self.read(b)),
+            I::DecrementMemory(b) => self.write(b, self.read(b).wrapping_sub(1)),
+            I::DecrementX => self.cpu.x_set(self.cpu.x.wrapping_sub(1)),
+            I::DecrementY => self.cpu.y_set(self.cpu.y.wrapping_sub(1)),
+            I::BitwiseExclusiveOr(b) => self.cpu.acc_set(self.cpu.acc ^ self.read(b)),
+            I::IncrementMemory(b) => self.write(b, self.read(b).wrapping_add(1)),
+            I::IncrementX => self.cpu.x_set(self.cpu.x.wrapping_add(1)),
+            I::IncrementY => self.cpu.y_set(self.cpu.y.wrapping_add(1)),
+            I::Jump(jump_address) => {
+                let addr = match jump_address {
+                    JumpAddress::Absolute(addr) => addr,
+                    JumpAddress::Indirect(addr_of_addr) => {
+                        let addr_of_addr = addr_of_addr as usize;
+                        let low = self.memory[addr_of_addr] as u16;
+                        // Cpu has a bug where if the start of this 2-byte variable is at an address ending in $FF it reads the second byte from the start of the page (each page is $100 bytes). We emulate this.
+                        let high_addr = if (addr_of_addr % 0x100) == 0xFF {
+                            addr_of_addr + 1 - 0x100
+                        } else {
+                            addr_of_addr + 1
+                        };
+                        let high = self.memory[high_addr] as u16;
+                        (high << 8) | low
+                    }
+                };
+                self.cpu.pc = addr;
+            }
+            I::JumpToSubroutine(addr) => {
+                self.push_u16(self.cpu.pc + 2);
+                self.cpu.pc = addr;
+            }
+            I::LoadAcc(b) => self.cpu.acc_set(self.read(b)),
+            I::LoadX(b) => self.cpu.x_set(self.read(b)),
+            I::LoadY(b) => self.cpu.y_set(self.read(b)),
+            I::LogicalShiftRight(b) => {
+                let value = self.read(b);
+                self.cpu.status.carry = value.bit(0);
+                self.write(b, value >> 1);
+            }
+            I::NoOperation => {}
+            I::BitwiseOr(b) => self.cpu.acc_set(self.cpu.acc | self.read(b)),
         }
     }
 
@@ -206,6 +244,15 @@ impl Nes {
         let (high, low) = (value.bits(8..16) as u8, value.bits(0..8) as u8);
         self.push(low);
         self.push(high);
+    }
+
+    fn compare(&self, a: u8, b: u8) -> Status {
+        Status {
+            carry: a >= b,
+            zero: a == b,
+            negative: a.wrapping_sub(b).bit(7),
+            ..self.cpu.status
+        }
     }
 
     /// Fetches the byte located at `location`. Used for fetching the actual argument values for instructions.
@@ -226,9 +273,11 @@ impl Nes {
         self.memory[addr as usize]
     }
 
-    /// Modifies the byte located at `location`. Used in instructions which modify their arguments (e.g. ASL - Arithmetic Left Shift).
+    /// Modifies the byte located at `location`. Used in instructions which modify their arguments (e.g. ASL - Arithmetic Left Shift). Sets the zero and negative flags.
     fn write(&mut self, location: ByteLocation, value: u8) {
         use ByteLocation as B;
+        self.cpu.status.zero = value == 0;
+        self.cpu.status.negative = value.bit(7);
         let addr = match location {
             B::Accumulator => {
                 self.cpu.acc_set(value);
@@ -245,15 +294,6 @@ impl Nes {
             B::IndirectY(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.y) as Address),
         };
         self.memory[addr as usize] = value;
-    }
-
-    fn read_word(&self, location: WordLocation) -> u16 {
-        use WordLocation as W;
-        let addr_of_addr = match location {
-            W::Indirect(a) => a,
-        };
-        let addr = self.get_le_u16(addr_of_addr);
-        self.get_le_u16(addr)
     }
 
     fn get_le_u16(&self, addr: Address) -> u16 {
@@ -278,6 +318,28 @@ impl Cpu {
             ..self.status
         };
         self.acc = value;
+    }
+
+    fn x_set(&mut self, value: u8) {
+        let zero = value == 0;
+        let negative = value.bit(7);
+        self.status = Status {
+            zero,
+            negative,
+            ..self.status
+        };
+        self.x = value;
+    }
+
+    fn y_set(&mut self, value: u8) {
+        let zero = value == 0;
+        let negative = value.bit(7);
+        self.status = Status {
+            zero,
+            negative,
+            ..self.status
+        };
+        self.y = value;
     }
 
     fn acc_add(&mut self, value: u8) {

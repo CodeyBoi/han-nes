@@ -1,5 +1,7 @@
 use super::{Address, ShortAddress};
 
+type Relative = i8;
+
 /// Info about 6502 instructions have been taken from https://www.nesdev.org/wiki/Instruction_reference.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Instruction {
@@ -14,54 +16,112 @@ pub enum Instruction {
     ArithmeticShiftLeft(ByteLocation),
 
     /// BCC: Add value to program counter if carry flag is clear.
-    BranchIfCarryClear(i8),
+    BranchIfCarryClear(Relative),
 
     /// BCS: Add value to program counter if carry flag is set.
-    BranchIfCarrySet(i8),
+    BranchIfCarrySet(Relative),
 
     /// BEQ: Add value to program counter if zero flag is set.
-    BranchIfEqual(i8),
+    BranchIfEqual(Relative),
 
     /// BIT: Modfies flags, but does not change memory or registers. Zero flag is set if accumulator & memory value == 0. Bits 7 and 6 are loaded directly into the negative and overflow flags.
     BitTest(ByteLocation),
 
     /// BMI: Add value to program counter if negative flag is set.
-    BranchIfMinus(i8),
+    BranchIfMinus(Relative),
 
     /// BEQ: Add value to program counter if zero flag is clear.
-    BranchIfNotEqual(i8),
+    BranchIfNotEqual(Relative),
 
     /// BPL: Add value to program counter if negative flag is clear.
-    BranchIfPlus(i8),
+    BranchIfPlus(Relative),
 
     /// BRK: Software interrupt. Pushes program counter and flags to stack and sets program counter to $FFFE.
     Break,
 
     /// BVC: Add value to program counter if overflow flag is clear.
-    BranchIfOverflowClear(i8),
+    BranchIfOverflowClear(Relative),
 
     /// BVC: Add value to program counter if overflow flag is set.
-    BranchIfOverflowSet(i8),
+    BranchIfOverflowSet(Relative),
 
     /// CLC: Clear the carry flag.
     ClearCarry,
 
     /// CLD: Clear the decimal flag.
     ClearDecimal,
+
+    /// CLI: Clear the interrupt disable flag.
+    ClearInterruptDisable,
+
+    /// CLV: Clear the overflow flag.
+    ClearOverflow,
+
+    /// CMP: Compares the accumulator to a memory value via a subtraction that sets status flags but doesn't modify any register values. NOTE: Does NOT affect the overflow flag.
+    CompareAcc(ByteLocation),
+
+    /// CPX: Like CompareAcc, but using the X register instead.
+    CompareX(ByteLocation),
+
+    /// CPY: Like CompareAcc, but using the Y register instead.
+    CompareY(ByteLocation),
+
+    /// DEC: Decrements a memory location. Cannot be used for decrementing the accumulator; ADC or SBC must be used instead. NOTE: Does NOT affect the carry nor overflow flags.
+    DecrementMemory(ByteLocation),
+
+    /// DEX: Decrements the X register. NOTE: Does NOT affect the carry nor overflow flags.
+    DecrementX,
+
+    /// DEY: Decrements the Y register. NOTE: Does NOT affect the carry nor overflow flags.
+    DecrementY,
+
+    /// EOR: Exclusive bitwise OR on a memory value and the accumulator and writes to the accumulator.
+    BitwiseExclusiveOr(ByteLocation),
+
+    /// INC: Increments a memory location. Cannot be used for incrementing the accumulator; ADC or SBC must be used instead. NOTE: Does NOT affect the carry nor overflow flags.
+    IncrementMemory(ByteLocation),
+
+    /// INX: Increments the X register. NOTE: Does NOT affect the carry nor overflow flags.
+    IncrementX,
+
+    /// INY: Increments the Y register. NOTE: Does NOT affect the carry nor overflow flags.
+    IncrementY,
+
+    /// JMP: Sets the program counter to a new value. If you want to return from that location, JSR (JumpToSubroutine) should be used instead.
+    Jump(JumpAddress),
+
+    /// JSR: Pushes the current program counter + 2 to the stack and sets it to a new value. Execution can then return by using RTS.
+    JumpToSubroutine(Address),
+
+    /// LDA: Loads a memory value into the accumulator.
+    LoadAcc(ByteLocation),
+
+    /// LDA: Loads a memory value into the X register.
+    LoadX(ByteLocation),
+
+    /// LDA: Loads a memory value into the Y register.
+    LoadY(ByteLocation),
+
+    /// LSR: Shifts all the bits in the accumulator or a memory value one position to the right. Lowest bit is shifted into the carry flag.
+    LogicalShiftRight(ByteLocation),
+
+    /// NOP: Does nothing. Used for padding.
+    NoOperation,
+
+    /// ORA: Bitwise ORs the accumulator and a memory value.
+    BitwiseOr(ByteLocation),
 }
 
 /// 6502 Addressing Modes. Defines different possible formats for fetching instructions arguments. More info about this can be found at https://www.nesdev.org/obelisk-6502-guide/addressing.html.
-///
-/// The code $XXX before each addressing mode shows of which form the opcode is (i.e. $CE means the opcode ends with C or E).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteLocation {
-    /// $A: The value in the A register.
+    /// The value in the A register.
     Accumulator,
 
-    /// $029: Allows the programmer to directly specify an 8-bit value. Indicated by a `#` symbol followed by the value (e.g. #F8).
+    /// Allows the programmer to directly specify an 8-bit value. Indicated by a `#` symbol followed by the value (e.g. #F8).
     Immediate(u8),
 
-    /// $memory access limited to the first 256 bytes of memory (i.e. $0000 to $00FF).
+    /// Memory access limited to the first 256 bytes of memory (i.e. $0000 to $00FF).
     ZeroPage(ShortAddress),
 
     /// Same as ZeroPage, but the X register is added to the address beforehand. If the addition is greater than #FF, it wraps around.
@@ -70,7 +130,7 @@ pub enum ByteLocation {
     /// Same as ZeroPageX, but using the Y register instead. Can only be used with the LDX and STX instructions.
     ZeroPageY(ShortAddress),
 
-    /// $CDEA memory access using a full 16-bit address.
+    /// Memory access using a full 16-bit address.
     Absolute(Address),
 
     /// Same as Absolute, but the X register is added to the address beforehand.
@@ -79,7 +139,7 @@ pub enum ByteLocation {
     /// Same as Absolute, but the Y register is added to the address beforehand.
     AbsoluteY(Address),
 
-    /// Reads the byte from the address held in zero page at address + X (little-endian). Wraps around if addition is greater than $FF.
+    /// Reads the byte from the address held in two bytes in zero page at address + X (little-endian). Wraps around if addition is greater than $FF.
     IndirectX(ShortAddress),
 
     /// Same as IndirectX, but using the Y register instead.
@@ -97,6 +157,12 @@ enum ByteLocationType {
     AbsoluteY,
     IndirectX,
     IndirectY,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpAddress {
+    Absolute(Address),
+    Indirect(Address),
 }
 
 impl ByteLocationType {
@@ -128,12 +194,6 @@ impl ByteLocationType {
             ),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum WordLocation {
-    /// Reads the two bytes at address (little-endian).
-    Indirect(Address),
 }
 
 trait Take: Sized {
