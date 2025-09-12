@@ -110,6 +110,69 @@ pub enum Instruction {
 
     /// ORA: Bitwise ORs the accumulator and a memory value.
     BitwiseOr(ByteLocation),
+
+    /// PHA: Push accumulator value to stack.
+    PushAcc,
+
+    /// PHP: Push status flag register to stack. Break flag is pushed as 1 (Software).
+    PushProcessorStatus,
+
+    /// PLA: Pops the top value from the stack and stores it in the accumulator.
+    PullAcc,
+
+    /// PLP: Pops the top value from the stack and stores it in the status flag register. The B and unused flags are ignored.
+    PullProcessorStatus,
+
+    /// ROL: Shifts a memory value or the accumulator to the left. The highest bit is rotated into the carry flag, and the carry flag is rotated into the lowest bit.
+    RotateLeft(ByteLocation),
+
+    /// ROL: Shifts a memory value or the accumulator to the right. The lowest bit is rotated into the carry flag, and the carry flag is rotated into the highest bit.
+    RotateRight(ByteLocation),
+
+    /// RTI: Returns from an interrupt handler by popping the status register and then the program counter from the stack.
+    ReturnFromInterrupt,
+
+    /// RTS: Returns from a subroutine by popping the program counter from stack and then incrementing the program counter.
+    ReturnFromSubroutine,
+
+    /// SBC: Subtracts a memory value and the bitwise negation of the carry flag from the accumulator.
+    SubtractWithCarry(ByteLocation),
+
+    /// SEC: Sets the carry flag.
+    SetCarry,
+
+    /// SED: Sets the decimal mode flag.
+    SetDecimal,
+
+    /// SEI: Sets the interrupt disable flag.
+    SetInterruptDisable,
+
+    /// STA: Stores the accumulator value into memory.
+    StoreAcc(ByteLocation),
+
+    /// STX: Stores the X register value into memory.
+    StoreX(ByteLocation),
+
+    /// STY: Stores the Y register value into memory.
+    StoreY(ByteLocation),
+
+    /// TAX: Copies the accumulator value into the X register.
+    TransferAccToX,
+
+    /// TAY: Copies the accumulator value into the Y register.
+    TransferAccToY,
+
+    /// TSX: Copies the stack pointer value into the X register.
+    TransferStackPointerToX,
+
+    /// TXA: Copies the X register value into the accumulator.
+    TransferXToAcc,
+
+    /// TXS: Copies the X register value into the stack pointer.
+    TransferXToStackPointer,
+
+    /// TYA: Copies the Y register value into the accumulator.
+    TransferYToAcc,
 }
 
 /// 6502 Addressing Modes. Defines different possible formats for fetching instructions arguments. More info about this can be found at https://www.nesdev.org/obelisk-6502-guide/addressing.html.

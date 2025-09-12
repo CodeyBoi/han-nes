@@ -228,6 +228,27 @@ impl Nes {
             }
             I::NoOperation => {}
             I::BitwiseOr(b) => self.cpu.acc_set(self.cpu.acc | self.read(b)),
+            I::PushAcc => todo!(),
+            I::PushProcessorStatus => todo!(),
+            I::PullAcc => todo!(),
+            I::PullProcessorStatus => todo!(),
+            I::RotateLeft(byte_location) => todo!(),
+            I::RotateRight(byte_location) => todo!(),
+            I::ReturnFromInterrupt => todo!(),
+            I::ReturnFromSubroutine => todo!(),
+            I::SubtractWithCarry(byte_location) => todo!(),
+            I::SetCarry => todo!(),
+            I::SetDecimal => todo!(),
+            I::SetInterruptDisable => todo!(),
+            I::StoreAcc(byte_location) => todo!(),
+            I::StoreX(byte_location) => todo!(),
+            I::StoreY(byte_location) => todo!(),
+            I::TransferAccToX => todo!(),
+            I::TransferAccToY => todo!(),
+            I::TransferStackPointerToX => todo!(),
+            I::TransferXToAcc => todo!(),
+            I::TransferXToStackPointer => todo!(),
+            I::TransferYToAcc => todo!(),
         }
     }
 
@@ -237,13 +258,18 @@ impl Nes {
             eprintln!("WARNING: stack full, next push will overflow!");
         }
         self.memory[STACK_BASE_ADDR + self.cpu.stack_pointer as usize] = value;
-        self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_add(1);
+        self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_sub(1);
     }
 
     fn push_u16(&mut self, value: u16) {
         let (high, low) = (value.bits(8..16) as u8, value.bits(0..8) as u8);
-        self.push(low);
         self.push(high);
+        self.push(low);
+    }
+
+    fn pop(&mut self) -> u8 {
+        self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_add(1);
+        self.memory[STACK_BASE_ADDR + self.cpu.stack_pointer as usize]
     }
 
     fn compare(&self, a: u8, b: u8) -> Status {
