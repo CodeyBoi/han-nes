@@ -1,7 +1,7 @@
 use super::{Address, ShortAddress};
 
 /// Info about 6502 instructions have been taken from https://www.nesdev.org/wiki/Instruction_reference.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Instruction {
     // Official instructions
     /// ADC: Adds the carry flag and a memory value to the accumulator.
@@ -53,7 +53,7 @@ pub enum Instruction {
 /// 6502 Addressing Modes. Defines different possible formats for fetching instructions arguments. More info about this can be found at https://www.nesdev.org/obelisk-6502-guide/addressing.html.
 ///
 /// The code $XXX before each addressing mode shows of which form the opcode is (i.e. $CE means the opcode ends with C or E).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteLocation {
     /// $A: The value in the A register.
     Accumulator,
@@ -102,6 +102,7 @@ enum ByteLocationType {
 impl ByteLocationType {
     fn from_opcode(opcode: u8) -> Self {
         use ByteLocationType as BT;
+        // Opcodes grouped by addressing mode was found at https://www.pagetable.com/c64ref/6502/?tab=3#
         match opcode {
             0x0a | 0x4a | 0x2a | 0x6a => BT::Accumulator,
             0x69 | 0x29 | 0xc9 | 0xe0 | 0xc0 | 0x49 | 0xa9 | 0xa2 | 0xa0 | 0x09 | 0xe9 => {
@@ -136,84 +137,157 @@ pub enum WordLocation {
 }
 
 trait Take: Sized {
-    fn take_one(self) -> (Self, u8);
-    fn take<const N: usize>(self) -> (Self, [u8; N]);
+    fn take_one(self) -> Result<(Self, u8), DecodeError>;
+    fn take<const N: usize>(self) -> Result<(Self, [u8; N]), DecodeError>;
 }
 
-impl Take for &[u8] {
-    fn take_one(self) -> (Self, u8) {
-        let (first, rest) = self.split_first().expect("reached end of RAM");
-        (rest, *first)
+impl<'a> Take for &'a [u8] {
+    fn take_one(self) -> Result<(Self, u8), DecodeError> {
+        let (first, rest) = self.split_first().ok_or(DecodeError::NeedsMoreData(1))?;
+        Ok((rest, *first))
     }
 
-    fn take<const N: usize>(self) -> (Self, [u8; N]) {
-        let (taken_bytes, data) = self.split_at_checked(N).expect("reached end of RAM");
-        (
+    fn take<const N: usize>(self) -> Result<(&'a [u8], [u8; N]), DecodeError> {
+        let (taken_bytes, data) = self
+            .split_at_checked(N)
+            .ok_or(DecodeError::NeedsMoreData(N - self.len()))?;
+        Ok((
             data,
             taken_bytes
                 .try_into()
                 .expect("if slice was too short it would have been caught above"),
-        )
+        ))
     }
 }
 
+macro_rules! build_instruction_with_branch {
+    ($instruction:ident, $data:ident) => {{
+        let (data, offset) = $data.take_one()?;
+        (data, Instruction::$instruction(offset as i8))
+    }};
+}
+
+macro_rules! build_instruction_with_location {
+    ($instruction:ident, $opcode:ident, $data:ident) => {{
+        let (data, location) = Self::location($data, ByteLocationType::from_opcode($opcode))?;
+        (data, Instruction::$instruction(location))
+    }};
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum DecodeError {
+    InvalidOpcode(u8),
+    NeedsMoreData(usize),
+}
+
 impl Instruction {
-    pub fn decode(data: &[u8]) -> Option<(&[u8], Instruction)> {
-        use ByteLocationType as BT;
-        use Instruction as I;
-        let (data, opcode) = data.take_one();
+    pub fn decode(data: &[u8]) -> Result<(&[u8], Instruction), DecodeError> {
+        let (data, opcode) = data.take_one()?;
         let (data, instruction) = match opcode {
             0x69 | 0x65 | 0x75 | 0x6D | 0x7D | 0x79 | 0x61 | 0x71 => {
-                let (data, location) = Self::location(data, BT::from_opcode(opcode));
-                (data, I::AddWithCarry(location))
+                build_instruction_with_location!(AddWithCarry, opcode, data)
             }
-            _ => panic!("opcode ${:X} not implemented", opcode),
+            0x29 | 0x25 | 0x35 | 0x2D | 0x3D | 0x39 | 0x21 | 0x31 => {
+                build_instruction_with_location!(BitwiseAnd, opcode, data)
+            }
+            0x0A | 0x06 | 0x16 | 0x0E | 0x1E => {
+                build_instruction_with_location!(ArithmeticShiftLeft, opcode, data)
+            }
+            0x90 => build_instruction_with_branch!(BranchIfCarryClear, data),
+            0xB0 => build_instruction_with_branch!(BranchIfCarrySet, data),
+            0xF0 => build_instruction_with_branch!(BranchIfEqual, data),
+            0x24 | 0x2C => build_instruction_with_location!(BitTest, opcode, data),
+            0x30 => build_instruction_with_branch!(BranchIfMinus, data),
+            0xD0 => build_instruction_with_branch!(BranchIfNotEqual, data),
+            0x10 => build_instruction_with_branch!(BranchIfPlus, data),
+            0x00 => {
+                // The return address that is pushed to the stack skips the following byte (current program counter + 2), so we shift data by 1.
+                let (data, _) = data.take_one()?;
+                (data, Instruction::Break)
+            }
+            0x50 => build_instruction_with_branch!(BranchIfOverflowClear, data),
+            0x70 => build_instruction_with_branch!(BranchIfOverflowSet, data),
+            0x18 => (data, Instruction::ClearCarry),
+            0xD8 => (data, Instruction::ClearDecimal),
+
+            _ => return Err(DecodeError::InvalidOpcode(opcode)),
         };
 
-        Some((data, instruction))
+        Ok((data, instruction))
     }
 
-    fn location(data: &[u8], byte_type: ByteLocationType) -> (&[u8], ByteLocation) {
+    fn location(
+        data: &[u8],
+        byte_type: ByteLocationType,
+    ) -> Result<(&[u8], ByteLocation), DecodeError> {
         use ByteLocation as B;
         use ByteLocationType as BT;
         match byte_type {
-            BT::Accumulator => (data, B::Accumulator),
+            BT::Accumulator => Ok((data, B::Accumulator)),
             BT::Immediate => {
-                let (data, value) = data.take_one();
-                (data, B::Immediate(value))
+                let (data, value) = data.take_one()?;
+                Ok((data, B::Immediate(value)))
             }
             BT::ZeroPage => {
-                let (data, addr) = data.take_one();
-                (data, B::ZeroPage(addr))
+                let (data, addr) = data.take_one()?;
+                Ok((data, B::ZeroPage(addr)))
             }
             BT::ZeroPageX => {
-                let (data, addr) = data.take_one();
-                (data, B::ZeroPageX(addr))
+                let (data, addr) = data.take_one()?;
+                Ok((data, B::ZeroPageX(addr)))
             }
             BT::ZeroPageY => {
-                let (data, addr) = data.take_one();
-                (data, B::ZeroPageY(addr))
+                let (data, addr) = data.take_one()?;
+                Ok((data, B::ZeroPageY(addr)))
             }
             BT::Absolute => {
-                let (data, [low, high]) = data.take();
-                (data, B::Absolute(((high as u16) << 8) | low as u16))
+                let (data, [low, high]) = data.take()?;
+                Ok((data, B::Absolute(((high as u16) << 8) | low as u16)))
             }
             BT::AbsoluteX => {
-                let (data, [low, high]) = data.take();
-                (data, B::AbsoluteX(((high as u16) << 8) | low as u16))
+                let (data, [low, high]) = data.take()?;
+                Ok((data, B::AbsoluteX(((high as u16) << 8) | low as u16)))
             }
             BT::AbsoluteY => {
-                let (data, [low, high]) = data.take();
-                (data, B::AbsoluteY(((high as u16) << 8) | low as u16))
+                let (data, [low, high]) = data.take()?;
+                Ok((data, B::AbsoluteY(((high as u16) << 8) | low as u16)))
             }
             BT::IndirectX => {
-                let (data, addr) = data.take_one();
-                (data, B::IndirectX(addr))
+                let (data, addr) = data.take_one()?;
+                Ok((data, B::IndirectX(addr)))
             }
             BT::IndirectY => {
-                let (data, addr) = data.take_one();
-                (data, B::IndirectY(addr))
+                let (data, addr) = data.take_one()?;
+                Ok((data, B::IndirectY(addr)))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ByteLocation as B;
+    use Instruction as I;
+
+    #[test]
+    fn test_decode() {
+        let data = [0x16, 0x55, 0x30, -0x12i8 as u8, 0x3D, 0xAD, 0xDE].as_slice();
+        assert_eq!(
+            I::decode(data),
+            Ok((&data[2..], I::ArithmeticShiftLeft(B::ZeroPageX(0x55))))
+        );
+
+        assert_eq!(
+            I::decode(&data[2..]),
+            Ok((&data[4..], I::BranchIfMinus(-0x12)))
+        );
+
+        assert_eq!(
+            I::decode(&data[4..]),
+            Ok((&data[7..], I::BitwiseAnd(B::AbsoluteX(0xDEAD))))
+        );
+
+        assert_eq!(I::decode(&data[7..]), Err(DecodeError::NeedsMoreData(1)));
     }
 }

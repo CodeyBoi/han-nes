@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use chip8::Chip8;
 use clap::{CommandFactory, Parser, Subcommand};
+use nes::Nes;
 
 mod bits;
 mod chip8;
@@ -18,6 +19,8 @@ struct Cli {
 enum Command {
     /// A Chip8 emulator, capable of running `ch8` ROMs
     Chip8(Chip8Args),
+    /// A Nintendo Entertainment System emulator, capable of running NES roms.
+    Nes(NesArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -36,6 +39,18 @@ struct Chip8Args {
     chip_type: chip8::ChipType,
 }
 
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct NesArgs {
+    /// Which dir to search for ROMs to present in the ROM Selector TUI
+    #[arg(short = 'd', long)]
+    roms_dir: Option<PathBuf>,
+
+    /// The ROM to load and run on startup
+    #[arg(short, long)]
+    binary: Option<PathBuf>,
+}
+
 fn main() {
     let (mut cmd, args) = (Cli::command(), Cli::parse());
     match args.command {
@@ -47,6 +62,12 @@ fn main() {
             };
             chip.load_rom(&rom).expect("ROM too large for memory");
             chip.run();
+        }
+        Some(Command::Nes(args)) => {
+            let mut nes = Nes::default();
+            if let Some(filepath) = args.binary {
+                nes.load_rom(&filepath);
+            }
         }
         None => cmd.print_help().expect("failed printing error message"),
     }

@@ -1,8 +1,11 @@
-use std::ops::{Index, IndexMut};
+use std::{
+    ops::{Index, IndexMut},
+    path::Path,
+};
 
 use instruction::{ByteLocation, Instruction, WordLocation};
 
-use crate::bits::BitAddressable as _;
+use crate::bits::BitAddressable;
 
 pub type Register = u8;
 pub type Address = u16;
@@ -10,12 +13,14 @@ pub type ShortAddress = u8;
 
 mod instruction;
 
-struct Nes {
+pub struct Nes {
     cpu: Cpu,
     memory: [u8; MEMORY_SIZE],
 }
 
 const MEMORY_SIZE: usize = 0x800;
+const STACK_BASE_ADDR: usize = 0x100;
+const STACK_SIZE: usize = 0x100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interrupt {
@@ -30,10 +35,8 @@ struct Cpu {
     /// Index register X, the main register for accessing data with indexes.
     x: Register,
     y: Register,
-    /// Status register
-    p: Register,
     /// Stack pointer
-    sp: Register,
+    stack_pointer: Register,
     /// Instructions pointer
     pc: Address,
     status: Status,
@@ -124,6 +127,13 @@ impl Default for Nes {
 }
 
 impl Nes {
+    pub fn load_rom<P>(&mut self, _filepath: &P)
+    where
+        P: AsRef<Path> + ?Sized,
+    {
+        todo!()
+    }
+
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
         match instruction {
@@ -146,19 +156,13 @@ impl Nes {
                 self.write(b, shifted);
             }
             I::BranchIfCarryClear(offset) => {
-                if !self.cpu.status.carry {
-                    self.branch(offset);
-                }
+                self.branch(offset, !self.cpu.status.carry);
             }
             I::BranchIfCarrySet(offset) => {
-                if self.cpu.status.carry {
-                    self.branch(offset);
-                }
+                self.branch(offset, self.cpu.status.carry);
             }
             I::BranchIfEqual(offset) => {
-                if self.cpu.status.zero {
-                    self.branch(offset);
-                }
+                self.branch(offset, self.cpu.status.zero);
             }
             I::BitTest(b) => {
                 let value = self.read(b);
@@ -169,15 +173,39 @@ impl Nes {
                     ..self.cpu.status
                 };
             }
-            I::BranchIfMinus(_) => todo!(),
-            I::BranchIfNotEqual(_) => todo!(),
-            I::BranchIfPlus(_) => todo!(),
-            I::Break => todo!(),
-            I::BranchIfOverflowClear(_) => todo!(),
-            I::BranchIfOverflowSet(_) => todo!(),
-            I::ClearCarry => todo!(),
-            I::ClearDecimal => todo!(),
+            I::BranchIfMinus(offset) => self.branch(offset, self.cpu.status.negative),
+            I::BranchIfNotEqual(offset) => self.branch(offset, !self.cpu.status.zero),
+            I::BranchIfPlus(offset) => self.branch(offset, !self.cpu.status.negative),
+            I::Break => {
+                self.push_u16(self.cpu.pc + 2);
+                let pushed_status = Status {
+                    interrupt: Interrupt::Software,
+                    ..self.cpu.status
+                };
+                self.push(pushed_status.into());
+                self.cpu.status.interrupt_disable = true;
+                self.cpu.pc = 0xFFFE;
+            }
+            I::BranchIfOverflowClear(offset) => self.branch(offset, !self.cpu.status.overflow),
+            I::BranchIfOverflowSet(offset) => self.branch(offset, self.cpu.status.overflow),
+            I::ClearCarry => self.cpu.status.carry = false,
+            I::ClearDecimal => self.cpu.status.decimal_mode = false,
         }
+    }
+
+    fn push(&mut self, value: u8) {
+        // 6502 uses an empty stack, meaning the stack pointer points to the element where the next value will be stored.
+        if self.cpu.stack_pointer == 0 {
+            eprintln!("WARNING: stack full, next push will overflow!");
+        }
+        self.memory[STACK_BASE_ADDR + self.cpu.stack_pointer as usize] = value;
+        self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_add(1);
+    }
+
+    fn push_u16(&mut self, value: u16) {
+        let (high, low) = (value.bits(8..16) as u8, value.bits(0..8) as u8);
+        self.push(low);
+        self.push(high);
     }
 
     /// Fetches the byte located at `location`. Used for fetching the actual argument values for instructions.
@@ -233,8 +261,10 @@ impl Nes {
         ((self.memory[addr + 1] as u16) << 8) | self.memory[addr] as u16
     }
 
-    fn branch(&mut self, offset: i8) {
-        self.cpu.pc = self.cpu.pc.wrapping_add_signed(offset as i16);
+    fn branch(&mut self, offset: i8, condition: bool) {
+        if condition {
+            self.cpu.pc = self.cpu.pc.wrapping_add_signed(offset as i16);
+        }
     }
 }
 
@@ -279,8 +309,7 @@ impl Default for Cpu {
             acc: 0,
             x: 0,
             y: 0,
-            p: 0,
-            sp: 0,
+            stack_pointer: 0xFF,
             pc: 0,
             status: Status::default(),
         }
