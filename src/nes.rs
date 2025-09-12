@@ -228,27 +228,54 @@ impl Nes {
             }
             I::NoOperation => {}
             I::BitwiseOr(b) => self.cpu.acc_set(self.cpu.acc | self.read(b)),
-            I::PushAcc => todo!(),
-            I::PushProcessorStatus => todo!(),
-            I::PullAcc => todo!(),
-            I::PullProcessorStatus => todo!(),
-            I::RotateLeft(byte_location) => todo!(),
-            I::RotateRight(byte_location) => todo!(),
-            I::ReturnFromInterrupt => todo!(),
-            I::ReturnFromSubroutine => todo!(),
-            I::SubtractWithCarry(byte_location) => todo!(),
-            I::SetCarry => todo!(),
-            I::SetDecimal => todo!(),
-            I::SetInterruptDisable => todo!(),
-            I::StoreAcc(byte_location) => todo!(),
-            I::StoreX(byte_location) => todo!(),
-            I::StoreY(byte_location) => todo!(),
-            I::TransferAccToX => todo!(),
-            I::TransferAccToY => todo!(),
-            I::TransferStackPointerToX => todo!(),
-            I::TransferXToAcc => todo!(),
-            I::TransferXToStackPointer => todo!(),
-            I::TransferYToAcc => todo!(),
+            I::PushAcc => self.push(self.cpu.acc),
+            I::PushProcessorStatus => self.push(self.cpu.status.into()),
+            I::PullAcc => {
+                let acc = self.pop();
+                self.cpu.acc_set(acc);
+            }
+            I::PullProcessorStatus => {
+                let status = self.pop();
+                self.cpu.status = status.into();
+            }
+            I::RotateLeft(b) => {
+                let value = self.read(b);
+                let rotated = (value << 1) | (self.cpu.status.carry as u8);
+                self.cpu.status.carry = value.bit(7);
+                self.write(b, rotated);
+            }
+            I::RotateRight(b) => {
+                let value = self.read(b);
+                let rotated = (value >> 1) | (self.cpu.status.carry as u8) << 7;
+                self.cpu.status.carry = value.bit(0);
+                self.write(b, rotated);
+            }
+            I::ReturnFromInterrupt => {
+                let status = self.pop();
+                self.cpu.status = status.into();
+                let program_counter = self.pop_u16();
+                self.cpu.pc = program_counter;
+            }
+            I::ReturnFromSubroutine => {
+                let program_counter = self.pop_u16() + 1;
+                self.cpu.pc = program_counter;
+            }
+            // TODO: Add tests for this. This might not be correct.
+            I::SubtractWithCarry(b) => self
+                .cpu
+                .acc_add(!self.read(b) + self.cpu.status.carry as u8),
+            I::SetCarry => self.cpu.status.carry = true,
+            I::SetDecimal => self.cpu.status.decimal_mode = true,
+            I::SetInterruptDisable => self.cpu.status.interrupt_disable = true,
+            I::StoreAcc(b) => self.write(b, self.cpu.acc),
+            I::StoreX(b) => self.write(b, self.cpu.x),
+            I::StoreY(b) => self.write(b, self.cpu.y),
+            I::TransferAccToX => self.cpu.x = self.cpu.acc,
+            I::TransferAccToY => self.cpu.y = self.cpu.acc,
+            I::TransferStackPointerToX => self.cpu.x = self.cpu.stack_pointer,
+            I::TransferXToAcc => self.cpu.acc = self.cpu.x,
+            I::TransferXToStackPointer => self.cpu.stack_pointer = self.cpu.x,
+            I::TransferYToAcc => self.cpu.acc = self.cpu.y,
         }
     }
 
@@ -270,6 +297,12 @@ impl Nes {
     fn pop(&mut self) -> u8 {
         self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_add(1);
         self.memory[STACK_BASE_ADDR + self.cpu.stack_pointer as usize]
+    }
+
+    fn pop_u16(&mut self) -> u16 {
+        let low = self.pop() as u16;
+        let high = self.pop() as u16;
+        (high << 8) | low
     }
 
     fn compare(&self, a: u8, b: u8) -> Status {
