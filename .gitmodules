@@ -1,6 +1,9 @@
 [submodule "chip8-roms"]
-	path = chip8-roms
+	path = roms/chip8-test
 	url = git@github.com:kripod/chip8-roms.git
 [submodule "chip8-test-roms"]
-	path = chip8-test-roms
+	path = roms/chip8
 	url = git@github.com:Timendus/chip8-test-suite.git
+[submodule "nes-test-roms"]
+	path = roms/nes-test
+	url = git@github.com:christopherpow/nes-test-roms.git
