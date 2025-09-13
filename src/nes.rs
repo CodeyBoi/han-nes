@@ -1,9 +1,12 @@
 use std::{
-    ops::{Index, IndexMut},
+    fmt::Display,
+    fs,
     path::Path,
+    time::{Duration, Instant},
 };
 
-use instruction::{ByteLocation, Instruction, JumpAddress};
+use instruction::{ByteLocation, Instruction, JumpAddress, Take as _};
+use sdl2::EventPump;
 
 use crate::bits::BitAddressable;
 
@@ -15,12 +18,24 @@ mod instruction;
 
 pub struct Nes {
     cpu: Cpu,
+    // TODO: Change this to a memory map which accesses the correct RAM/ROM/IO depending on the address given.
     memory: [u8; MEMORY_SIZE],
+    prg_rom: Option<[u8; ROM_SIZE]>,
+    is_running: bool,
 }
 
 const MEMORY_SIZE: usize = 0x800;
-const STACK_BASE_ADDR: usize = 0x100;
+const STACK_BASE: usize = 0x100;
 const STACK_SIZE: usize = 0x100;
+const PPU_BASE: usize = 0x2000;
+const IO_BASE: usize = 0x4000;
+const ROM_BASE: usize = 0x8000;
+const ROM_SIZE: usize = 0x8000;
+
+// TODO: Create struct with different hardware values for the different regions so you can load them dynamically.
+const CLOCK_HZ: usize = 1789773; // 1662607 for PAL
+
+pub const MAGIC_TAG: &[u8; 4] = &[b'N', b'E', b'S', 0x1A];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interrupt {
@@ -30,15 +45,17 @@ enum Interrupt {
 
 #[derive(Clone, Copy, Debug)]
 struct Cpu {
-    /// General purpose registers
+    /// General arithmetic register A (accumulator)
     acc: Register,
     /// Index register X, the main register for accessing data with indexes.
     x: Register,
+    /// Index register Y, like X but less used.
     y: Register,
-    /// Stack pointer
+    /// Stack pointer. The 6502 uses an empty stack which grows downwards, meaning the stack pointer points to the first empty slot. It is therefore initialzied to $FF.
     stack_pointer: Register,
-    /// Instructions pointer
+    /// Program counter, points to the current instruction.
     pc: Address,
+    /// A collection of status and arithmetic flags.
     status: Status,
 }
 
@@ -107,7 +124,7 @@ impl Default for Status {
         Self {
             carry: false,
             zero: false,
-            interrupt_disable: false,
+            interrupt_disable: true,
             decimal_mode: false,
             interrupt: Interrupt::Software,
             unused: true,
@@ -122,16 +139,84 @@ impl Default for Nes {
         Self {
             cpu: Cpu::default(),
             memory: [0; MEMORY_SIZE],
+            prg_rom: None,
+            is_running: true,
         }
     }
 }
 
+pub enum LoadError {
+    ReadError,
+    NeedsMoreData(usize),
+    InvalidMagic([u8; 4]),
+}
+
 impl Nes {
-    pub fn load_rom<P>(&mut self, _filepath: &P)
+    pub fn load_rom<P>(&mut self, filepath: &P) -> Result<(), LoadError>
     where
         P: AsRef<Path> + ?Sized,
     {
-        todo!()
+        let data = fs::read(filepath).or(Err(LoadError::ReadError))?;
+
+        let (data, magic) = data
+            .as_slice()
+            .take()
+            .or(Err(LoadError::NeedsMoreData(4 - data.len())))?;
+        if &magic != MAGIC_TAG {
+            return Err(LoadError::InvalidMagic(magic));
+        }
+
+        let (data, prg_rom_size) = data.take_one()
+            .or(Err(LoadError::NeedsMoreData(1)))?;
+        let (data, _chr_rom_size) = data.take_one()
+            .or(Err(LoadError::NeedsMoreData(1)))?;
+
+        let (data, flags) = data.take::<10>()
+            .or(Err(LoadError::NeedsMoreData(10 - data.len())))?;
+
+        let has_trainer = flags[0].bit(2);
+
+        let (data, _trainer) = if has_trainer {
+            data.take::<512>()
+            .or(Err(LoadError::NeedsMoreData(512 - data.len())))?
+        } else {
+            (data, [0x0; 512])
+        };
+
+        let prg_rom_bytes = prg_rom_size as usize * (0x1 << 14);
+        let (data, prg_rom) = data.take_n(prg_rom_bytes)
+            .or(Err(LoadError::NeedsMoreData(prg_rom_bytes - data.len())))?;
+
+        self.prg_rom = Some([0x0; ROM_SIZE]);
+        if let Some(mut rom) = self.prg_rom {
+            rom[0..prg_rom.len()].copy_from_slice(prg_rom);
+            if prg_rom.len() < rom.len() {
+                rom[prg_rom.len()..].copy_from_slice(prg_rom);
+            }
+        }
+       
+        Ok(())
+    }
+
+    pub fn run(&mut self) {
+        let now = Instant::now();
+        let duration_per_cycle = Duration::from_nanos(1_000_000_000 / CLOCK_HZ as u64);
+        let mut next_cycle = now;
+
+        loop {
+            let now = Instant::now();
+            let start = Instant::now();
+
+            if now >= next_cycle {
+                
+            }
+
+            std::thread::sleep(duration_per_cycle.saturating_sub(start.elapsed()));
+        }
+    }
+
+    fn do_logical_step(&mut self) {
+        let instruction = Instruction::decode(self.memory)
     }
 
     fn execute(&mut self, instruction: Instruction) {
@@ -284,7 +369,7 @@ impl Nes {
         if self.cpu.stack_pointer == 0 {
             eprintln!("WARNING: stack full, next push will overflow!");
         }
-        self.memory[STACK_BASE_ADDR + self.cpu.stack_pointer as usize] = value;
+        self.memory[STACK_BASE + self.cpu.stack_pointer as usize] = value;
         self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_sub(1);
     }
 
@@ -296,7 +381,7 @@ impl Nes {
 
     fn pop(&mut self) -> u8 {
         self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_add(1);
-        self.memory[STACK_BASE_ADDR + self.cpu.stack_pointer as usize]
+        self.memory[STACK_BASE + self.cpu.stack_pointer as usize]
     }
 
     fn pop_u16(&mut self) -> u16 {
@@ -431,7 +516,7 @@ impl Default for Cpu {
             x: 0,
             y: 0,
             stack_pointer: 0xFF,
-            pc: 0,
+            pc: 0xFFFC,
             status: Status::default(),
         }
     }

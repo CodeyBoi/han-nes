@@ -259,9 +259,10 @@ impl ByteLocationType {
     }
 }
 
-trait Take: Sized {
+pub trait Take: Sized {
     fn take_one(self) -> Result<(Self, u8), DecodeError>;
     fn take<const N: usize>(self) -> Result<(Self, [u8; N]), DecodeError>;
+    fn take_n(self, n: usize) -> Result<(Self, Self), DecodeError>;
 }
 
 impl<'a> Take for &'a [u8] {
@@ -280,6 +281,13 @@ impl<'a> Take for &'a [u8] {
                 .try_into()
                 .expect("if slice was too short it would have been caught above"),
         ))
+    }
+
+    fn take_n(self, n: usize) -> Result<(Self, Self), DecodeError> {
+        let (taken_bytes, data) = self
+            .split_at_checked(n)
+            .ok_or(DecodeError::NeedsMoreData(n - self.len()))?;
+        Ok((data, taken_bytes))
     }
 }
 

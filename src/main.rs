@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chip8::Chip8;
 use clap::{CommandFactory, Parser, Subcommand};
-use nes::Nes;
+use nes::{LoadError, Nes};
 
 mod bits;
 mod chip8;
@@ -66,7 +66,21 @@ fn main() {
         Some(Command::Nes(args)) => {
             let mut nes = Nes::default();
             if let Some(filepath) = args.binary {
-                nes.load_rom(&filepath);
+                let _ = nes.load_rom(&filepath).inspect_err(|e| match *e {
+                    LoadError::ReadError => panic!("error reading NES rom: {}", filepath.display()),
+                    LoadError::NeedsMoreData(bytes) => panic!(
+                        "unexpected end of file when reading NES rom (missing {} bytes): {}",
+                        bytes,
+                        filepath.display()
+                    ),
+                    LoadError::InvalidMagic(magic) => {
+                        panic!(
+                            "invalid magic header for NES rom: {:?} (should be {:?})",
+                            magic,
+                            nes::MAGIC_TAG
+                        )
+                    }
+                });
             }
         }
         None => cmd.print_help().expect("failed printing error message"),
