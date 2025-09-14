@@ -276,20 +276,6 @@ impl ByteLocation {
             B::IndirectY(_) => 4,
         }
     }
-
-    pub const fn extra_cycle_on_page_boundary(&self) -> bool {
-        use ByteLocation as B;
-        match self {
-            B::Accumulator
-            | B::Immediate(_)
-            | B::ZeroPage(_)
-            | B::ZeroPageX(_)
-            | B::ZeroPageY(_)
-            | B::Absolute(_)
-            | B::IndirectX(_) => false,
-            B::AbsoluteX(_) | B::AbsoluteY(_) | B::IndirectY(_) => true,
-        }
-    }
 }
 
 pub trait Take: Sized {
@@ -307,7 +293,7 @@ impl<'a> Take for &'a [u8] {
     fn take<const N: usize>(self) -> Result<(&'a [u8], [u8; N]), DecodeError> {
         let (taken_bytes, data) = self
             .split_at_checked(N)
-            .ok_or(DecodeError::NeedsMoreData(N - self.len()))?;
+            .ok_or_else(|| DecodeError::NeedsMoreData(N - self.len()))?;
         Ok((
             data,
             taken_bytes
@@ -319,7 +305,7 @@ impl<'a> Take for &'a [u8] {
     fn take_n(self, n: usize) -> Result<(Self, Self), DecodeError> {
         let (taken_bytes, data) = self
             .split_at_checked(n)
-            .ok_or(DecodeError::NeedsMoreData(n - self.len()))?;
+            .ok_or_else(|| DecodeError::NeedsMoreData(n - self.len()))?;
         Ok((data, taken_bytes))
     }
 }

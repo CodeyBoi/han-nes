@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::Path,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -53,7 +54,7 @@ impl Nes {
         let (data, magic) = data
             .as_slice()
             .take()
-            .or(Err(LoadError::NeedsMoreData(4 - data.len())))?;
+            .map_err(|_| LoadError::NeedsMoreData(4 - data.len()))?;
         if &magic != MAGIC_TAG {
             return Err(LoadError::InvalidMagic(magic));
         }
@@ -63,13 +64,13 @@ impl Nes {
 
         let (data, flags) = data
             .take::<10>()
-            .or(Err(LoadError::NeedsMoreData(10 - data.len())))?;
+            .map_err(|_| LoadError::NeedsMoreData(10 - data.len()))?;
 
         let has_trainer = flags[0].bit(2);
 
         let (data, _trainer) = if has_trainer {
             data.take::<512>()
-                .or(Err(LoadError::NeedsMoreData(512 - data.len())))?
+                .map_err(|_| LoadError::NeedsMoreData(512 - data.len()))?
         } else {
             (data, [0x0; 512])
         };
@@ -77,9 +78,11 @@ impl Nes {
         let prg_rom_bytes = prg_rom_size as usize * (0x1 << 14);
         let (data, prg_rom) = data
             .take_n(prg_rom_bytes)
-            .or(Err(LoadError::NeedsMoreData(prg_rom_bytes - data.len())))?;
+            .map_err(|_| LoadError::NeedsMoreData(prg_rom_bytes - data.len()))?;
 
         self.memory.load_program_rom(prg_rom);
+
+        self.cpu.pc = self.get_le_u16(0xFFFC);
 
         Ok(())
     }
@@ -89,18 +92,31 @@ impl Nes {
         let duration_per_cycle = Duration::from_nanos(1_000_000_000 / CLOCK_HZ as u64);
         let mut next_cycle = now;
 
-        loop {
+        while self.is_running {
             let now = Instant::now();
             let start = Instant::now();
 
-            if now >= next_cycle {}
+            if now >= next_cycle {
+                let data = self.memory.slice_from(self.cpu.pc);
+                let data_start = data.as_ptr() as usize;
+                let (new_data, instruction) = match Instruction::decode(data) {
+                    Ok(v) => v,
+                    Err(e) => panic!("{:#X?}", e),
+                };
+                let data_end = new_data.as_ptr() as usize;
 
-            std::thread::sleep(duration_per_cycle.saturating_sub(start.elapsed()));
+                // TODO: Add an actual cycle count
+                let cycles = 7;
+
+                self.execute(instruction);
+
+                next_cycle += duration_per_cycle * cycles;
+                self.cycle += cycles as u128;
+                self.cpu.pc += (data_end - data_start) as u16;
+            }
+
+            thread::sleep(duration_per_cycle.saturating_sub(start.elapsed()));
         }
-    }
-
-    fn do_logical_step(&mut self) {
-        // let instruction = Instruction::decode(self.memory)
     }
 
     fn execute(&mut self, instruction: Instruction) {
@@ -279,6 +295,21 @@ impl Nes {
             zero: a == b,
             negative: a.wrapping_sub(b).bit(7),
             ..self.cpu.status
+        }
+    }
+
+    fn page_boundary_cycles(&self, location: ByteLocation) -> i128 {
+        match location {
+            ByteLocation::AbsoluteX(addr) => {
+                ((addr + self.cpu.x as u16) % 0x100 < addr % 0x100) as i128
+            }
+            ByteLocation::AbsoluteY(addr) => {
+                ((addr + self.cpu.y as u16) % 0x100 < addr % 0x100) as i128
+            }
+            ByteLocation::IndirectY(addr) => {
+                ((addr as u16 + self.cpu.y as u16) % 0x100 < addr as u16 % 0x100) as i128
+            }
+            _ => 0,
         }
     }
 

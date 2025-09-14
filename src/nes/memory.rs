@@ -32,6 +32,15 @@ impl MemoryMap {
             self.program_rom[data.len()..].copy_from_slice(data);
         }
     }
+
+    pub fn slice_from(&self, addr: Address) -> &[u8] {
+        let addr = addr as usize;
+        match addr {
+            RAM_BASE..RAM_END => &self.ram[addr - RAM_BASE..RAM_SIZE],
+            ROM_BASE..ROM_END => &self.program_rom[addr - ROM_BASE..ROM_SIZE],
+            _ => panic!("invalid memory access @ {:X}", addr),
+        }
+    }
 }
 
 impl Index<Address> for MemoryMap {
@@ -40,8 +49,8 @@ impl Index<Address> for MemoryMap {
     fn index(&self, index: Address) -> &Self::Output {
         let addr = index as usize;
         match addr {
-            RAM_BASE..RAM_END => &self.ram[addr],
-            ROM_BASE..ROM_END => &self.program_rom[addr],
+            RAM_BASE..RAM_END => &self.ram[addr - RAM_BASE],
+            ROM_BASE..ROM_END => &self.program_rom[addr - ROM_BASE],
             _ => panic!("invalid memory access @ {:X}", addr),
         }
     }
@@ -51,8 +60,8 @@ impl IndexMut<Address> for MemoryMap {
     fn index_mut(&mut self, index: Address) -> &mut Self::Output {
         let addr = index as usize;
         match addr {
-            RAM_BASE..RAM_END => &mut self.ram[addr],
-            ROM_BASE..ROM_END => &mut self.program_rom[addr],
+            RAM_BASE..RAM_END => &mut self.ram[addr - RAM_BASE],
+            ROM_BASE..ROM_END => &mut self.program_rom[addr - ROM_BASE],
             _ => panic!("invalid memory access @ {:X}", addr),
         }
     }

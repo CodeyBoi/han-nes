@@ -81,6 +81,7 @@ fn main() {
                         )
                     }
                 });
+                nes.run();
             }
         }
         None => cmd.print_help().expect("failed printing error message"),
