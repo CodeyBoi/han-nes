@@ -1,4 +1,5 @@
-use super::{Address, ShortAddress};
+use crate::nes::Address;
+use crate::nes::cpu::ShortAddress;
 
 type Relative = i8;
 
@@ -255,6 +256,38 @@ impl ByteLocationType {
                 "tried to get byte location type of invalid opcode ${:X}",
                 opcode
             ),
+        }
+    }
+}
+
+impl ByteLocation {
+    pub const fn cycles(&self) -> i128 {
+        use ByteLocation as B;
+        match self {
+            B::Accumulator => 1,
+            B::Immediate(_) => 1,
+            B::ZeroPage(_) => 2,
+            B::ZeroPageX(_) => 3,
+            B::ZeroPageY(_) => 3,
+            B::Absolute(_) => 3,
+            B::AbsoluteX(_) => 3,
+            B::AbsoluteY(_) => 3,
+            B::IndirectX(_) => 5,
+            B::IndirectY(_) => 4,
+        }
+    }
+
+    pub const fn extra_cycle_on_page_boundary(&self) -> bool {
+        use ByteLocation as B;
+        match self {
+            B::Accumulator
+            | B::Immediate(_)
+            | B::ZeroPage(_)
+            | B::ZeroPageX(_)
+            | B::ZeroPageY(_)
+            | B::Absolute(_)
+            | B::IndirectX(_) => false,
+            B::AbsoluteX(_) | B::AbsoluteY(_) | B::IndirectY(_) => true,
         }
     }
 }

@@ -1,155 +1,38 @@
 use std::{
-    fmt::Display,
     fs,
-    ops::{Index, IndexMut},
     path::Path,
     time::{Duration, Instant},
 };
 
+use cpu::{Address, Cpu, Interrupt, Status};
 use instruction::{ByteLocation, Instruction, JumpAddress, Take as _};
-use sdl2::EventPump;
+use memory::{MemoryMap, STACK_BASE};
 
 use crate::bits::BitAddressable;
 
-pub type Register = u8;
-pub type Address = u16;
-pub type ShortAddress = u8;
-
+mod cpu;
 mod instruction;
+mod memory;
 
 pub struct Nes {
     cpu: Cpu,
     memory: MemoryMap,
     is_running: bool,
+    cycle: u128,
 }
-
-const RAM_BASE: usize = 0x0000;
-const RAM_SIZE: usize = 0x800;
-const RAM_END: usize = RAM_BASE + RAM_SIZE;
-const STACK_BASE: usize = 0x100;
-const STACK_SIZE: usize = 0x100;
-const PPU_BASE: usize = 0x2000;
-const IO_BASE: usize = 0x4000;
-const ROM_BASE: usize = 0x8000;
-const ROM_SIZE: usize = 0x8000;
-const ROM_END: usize = ROM_BASE + ROM_SIZE;
 
 // TODO: Create struct with different hardware values for the different regions so you can load them dynamically.
 const CLOCK_HZ: usize = 1789773; // 1662607 for PAL
 
 pub const MAGIC_TAG: &[u8; 4] = &[b'N', b'E', b'S', 0x1A];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Interrupt {
-    Software,
-    Hardware,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Cpu {
-    /// General arithmetic register A (accumulator)
-    acc: Register,
-    /// Index register X, the main register for accessing data with indexes.
-    x: Register,
-    /// Index register Y, like X but less used.
-    y: Register,
-    /// Stack pointer. The 6502 uses an empty stack which grows downwards, meaning the stack pointer points to the first empty slot. It is therefore initialzied to $FF.
-    stack_pointer: Register,
-    /// Program counter, points to the current instruction.
-    pc: Address,
-    /// A collection of status and arithmetic flags.
-    status: Status,
-}
-
-struct MemoryMap {
-    ram: [u8; RAM_SIZE],
-    program_rom: [u8; ROM_SIZE],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Status {
-    /// Used in additions, subtractions, comparisons and bit rotations. In additions and subtractions it acts as a 9th bit. Comparisons are a special case of subtraction, as they assume carry flag set and decimal flag clear, and do not save the result anywhere. For bit rotations, the bit that is rotated off is stored in the carry flag.
-    carry: bool,
-    /// Is set if an arithmetic register is loaded with the value 0. Will behave differently in decimal mode.
-    zero: bool,
-    /// Prevents the CPU from jumping to the IRQ handler vector ($FFFE) whenever the hardware line -IRQ is active. It is automatically set after taking an interrupt.
-    interrupt_disable: bool,
-    /// Selects the (Binary Coded) Decimal mode for addition and subtraction. Is most often cleared.
-    decimal_mode: bool,
-    /// Distinguishes software interrupts (BRK) from hardware interrupts (IRQ or NMI).
-    interrupt: Interrupt,
-    /// Is always true.
-    unused: bool,
-    /// After a binary addition or subtraction this flag will be set on a sign overflow, otherwise cleared. Will not be set as expected in decimal mode.
-    overflow: bool,
-    /// This flag will be set after any arithmetic operation. Generally, the flag will be copied from the topmost bit of the result (as that's the sign bit). Will not be set as expected in decimal mode.
-    negative: bool,
-}
-
-impl From<u8> for Status {
-    fn from(value: u8) -> Self {
-        Self {
-            carry: value.bit(0),
-            zero: value.bit(1),
-            interrupt_disable: value.bit(2),
-            decimal_mode: value.bit(3),
-            interrupt: if value.bit(4) {
-                Interrupt::Software
-            } else {
-                Interrupt::Hardware
-            },
-            unused: value.bit(5),
-            overflow: value.bit(6),
-            negative: value.bit(7),
-        }
-    }
-}
-
-impl From<Status> for u8 {
-    fn from(value: Status) -> Self {
-        [
-            value.carry,
-            value.zero,
-            value.interrupt_disable,
-            value.decimal_mode,
-            match value.interrupt {
-                Interrupt::Software => true,
-                Interrupt::Hardware => false,
-            },
-            value.unused,
-            value.overflow,
-            value.negative,
-        ]
-        .iter()
-        .enumerate()
-        .fold(0, |acc, (i, v)| acc | ((*v as u8) << i))
-    }
-}
-
-impl Default for Status {
-    fn default() -> Self {
-        Self {
-            carry: false,
-            zero: false,
-            interrupt_disable: true,
-            decimal_mode: false,
-            interrupt: Interrupt::Software,
-            unused: true,
-            overflow: false,
-            negative: false,
-        }
-    }
-}
-
 impl Default for Nes {
     fn default() -> Self {
         Self {
             cpu: Cpu::default(),
-            memory: MemoryMap {
-                ram: [0x0; RAM_SIZE],
-                program_rom: [0x0; ROM_SIZE],
-            },
+            memory: MemoryMap::new(),
             is_running: true,
+            cycle: 0,
         }
     }
 }
@@ -158,39 +41,6 @@ pub enum LoadError {
     ReadError,
     NeedsMoreData(usize),
     InvalidMagic([u8; 4]),
-}
-
-impl MemoryMap {
-    fn load_program_rom(&mut self, data: &[u8]) {
-        self.program_rom[..data.len()].copy_from_slice(data);
-        if data.len() < self.program_rom.len() {
-            self.program_rom[data.len()..].copy_from_slice(data);
-        }
-    }
-}
-
-impl Index<Address> for MemoryMap {
-    type Output = u8;
-
-    fn index(&self, index: Address) -> &Self::Output {
-        let addr = index as usize;
-        match addr {
-            RAM_BASE..RAM_END => &self.ram[addr],
-            ROM_BASE..ROM_END => &self.program_rom[addr],
-            _ => panic!("invalid memory access @ {:X}", addr),
-        }
-    }
-}
-
-impl IndexMut<Address> for MemoryMap {
-    fn index_mut(&mut self, index: Address) -> &mut Self::Output {
-        let addr = index as usize;
-        match addr {
-            RAM_BASE..RAM_END => &mut self.ram[addr],
-            ROM_BASE..ROM_END => &mut self.program_rom[addr],
-            _ => panic!("invalid memory access @ {:X}", addr),
-        }
-    }
 }
 
 impl Nes {
@@ -388,12 +238,12 @@ impl Nes {
             I::StoreAcc(b) => self.write(b, self.cpu.acc),
             I::StoreX(b) => self.write(b, self.cpu.x),
             I::StoreY(b) => self.write(b, self.cpu.y),
-            I::TransferAccToX => self.cpu.x = self.cpu.acc,
-            I::TransferAccToY => self.cpu.y = self.cpu.acc,
-            I::TransferStackPointerToX => self.cpu.x = self.cpu.stack_pointer,
-            I::TransferXToAcc => self.cpu.acc = self.cpu.x,
+            I::TransferAccToX => self.cpu.x_set(self.cpu.acc),
+            I::TransferAccToY => self.cpu.y_set(self.cpu.acc),
+            I::TransferStackPointerToX => self.cpu.x_set(self.cpu.stack_pointer),
+            I::TransferXToAcc => self.cpu.acc_set(self.cpu.x),
             I::TransferXToStackPointer => self.cpu.stack_pointer = self.cpu.x,
-            I::TransferYToAcc => self.cpu.acc = self.cpu.y,
+            I::TransferYToAcc => self.cpu.acc_set(self.cpu.y),
         }
     }
 
