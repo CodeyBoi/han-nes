@@ -1,6 +1,7 @@
 use std::{
     fmt::Display,
     fs,
+    ops::{Index, IndexMut},
     path::Path,
     time::{Duration, Instant},
 };
@@ -18,19 +19,20 @@ mod instruction;
 
 pub struct Nes {
     cpu: Cpu,
-    // TODO: Change this to a memory map which accesses the correct RAM/ROM/IO depending on the address given.
-    memory: [u8; MEMORY_SIZE],
-    prg_rom: Option<[u8; ROM_SIZE]>,
+    memory: MemoryMap,
     is_running: bool,
 }
 
-const MEMORY_SIZE: usize = 0x800;
+const RAM_BASE: usize = 0x0000;
+const RAM_SIZE: usize = 0x800;
+const RAM_END: usize = RAM_BASE + RAM_SIZE;
 const STACK_BASE: usize = 0x100;
 const STACK_SIZE: usize = 0x100;
 const PPU_BASE: usize = 0x2000;
 const IO_BASE: usize = 0x4000;
 const ROM_BASE: usize = 0x8000;
 const ROM_SIZE: usize = 0x8000;
+const ROM_END: usize = ROM_BASE + ROM_SIZE;
 
 // TODO: Create struct with different hardware values for the different regions so you can load them dynamically.
 const CLOCK_HZ: usize = 1789773; // 1662607 for PAL
@@ -57,6 +59,11 @@ struct Cpu {
     pc: Address,
     /// A collection of status and arithmetic flags.
     status: Status,
+}
+
+struct MemoryMap {
+    ram: [u8; RAM_SIZE],
+    program_rom: [u8; ROM_SIZE],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,8 +145,10 @@ impl Default for Nes {
     fn default() -> Self {
         Self {
             cpu: Cpu::default(),
-            memory: [0; MEMORY_SIZE],
-            prg_rom: None,
+            memory: MemoryMap {
+                ram: [0x0; RAM_SIZE],
+                program_rom: [0x0; ROM_SIZE],
+            },
             is_running: true,
         }
     }
@@ -149,6 +158,39 @@ pub enum LoadError {
     ReadError,
     NeedsMoreData(usize),
     InvalidMagic([u8; 4]),
+}
+
+impl MemoryMap {
+    fn load_program_rom(&mut self, data: &[u8]) {
+        self.program_rom[..data.len()].copy_from_slice(data);
+        if data.len() < self.program_rom.len() {
+            self.program_rom[data.len()..].copy_from_slice(data);
+        }
+    }
+}
+
+impl Index<Address> for MemoryMap {
+    type Output = u8;
+
+    fn index(&self, index: Address) -> &Self::Output {
+        let addr = index as usize;
+        match addr {
+            RAM_BASE..RAM_END => &self.ram[addr],
+            ROM_BASE..ROM_END => &self.program_rom[addr],
+            _ => panic!("invalid memory access @ {:X}", addr),
+        }
+    }
+}
+
+impl IndexMut<Address> for MemoryMap {
+    fn index_mut(&mut self, index: Address) -> &mut Self::Output {
+        let addr = index as usize;
+        match addr {
+            RAM_BASE..RAM_END => &mut self.ram[addr],
+            ROM_BASE..ROM_END => &mut self.program_rom[addr],
+            _ => panic!("invalid memory access @ {:X}", addr),
+        }
+    }
 }
 
 impl Nes {
@@ -166,35 +208,29 @@ impl Nes {
             return Err(LoadError::InvalidMagic(magic));
         }
 
-        let (data, prg_rom_size) = data.take_one()
-            .or(Err(LoadError::NeedsMoreData(1)))?;
-        let (data, _chr_rom_size) = data.take_one()
-            .or(Err(LoadError::NeedsMoreData(1)))?;
+        let (data, prg_rom_size) = data.take_one().or(Err(LoadError::NeedsMoreData(1)))?;
+        let (data, _chr_rom_size) = data.take_one().or(Err(LoadError::NeedsMoreData(1)))?;
 
-        let (data, flags) = data.take::<10>()
+        let (data, flags) = data
+            .take::<10>()
             .or(Err(LoadError::NeedsMoreData(10 - data.len())))?;
 
         let has_trainer = flags[0].bit(2);
 
         let (data, _trainer) = if has_trainer {
             data.take::<512>()
-            .or(Err(LoadError::NeedsMoreData(512 - data.len())))?
+                .or(Err(LoadError::NeedsMoreData(512 - data.len())))?
         } else {
             (data, [0x0; 512])
         };
 
         let prg_rom_bytes = prg_rom_size as usize * (0x1 << 14);
-        let (data, prg_rom) = data.take_n(prg_rom_bytes)
+        let (data, prg_rom) = data
+            .take_n(prg_rom_bytes)
             .or(Err(LoadError::NeedsMoreData(prg_rom_bytes - data.len())))?;
 
-        self.prg_rom = Some([0x0; ROM_SIZE]);
-        if let Some(mut rom) = self.prg_rom {
-            rom[0..prg_rom.len()].copy_from_slice(prg_rom);
-            if prg_rom.len() < rom.len() {
-                rom[prg_rom.len()..].copy_from_slice(prg_rom);
-            }
-        }
-       
+        self.memory.load_program_rom(prg_rom);
+
         Ok(())
     }
 
@@ -207,16 +243,14 @@ impl Nes {
             let now = Instant::now();
             let start = Instant::now();
 
-            if now >= next_cycle {
-                
-            }
+            if now >= next_cycle {}
 
             std::thread::sleep(duration_per_cycle.saturating_sub(start.elapsed()));
         }
     }
 
     fn do_logical_step(&mut self) {
-        let instruction = Instruction::decode(self.memory)
+        // let instruction = Instruction::decode(self.memory)
     }
 
     fn execute(&mut self, instruction: Instruction) {
@@ -285,7 +319,6 @@ impl Nes {
                 let addr = match jump_address {
                     JumpAddress::Absolute(addr) => addr,
                     JumpAddress::Indirect(addr_of_addr) => {
-                        let addr_of_addr = addr_of_addr as usize;
                         let low = self.memory[addr_of_addr] as u16;
                         // Cpu has a bug where if the start of this 2-byte variable is at an address ending in $FF it reads the second byte from the start of the page (each page is $100 bytes). We emulate this.
                         let high_addr = if (addr_of_addr % 0x100) == 0xFF {
@@ -369,7 +402,7 @@ impl Nes {
         if self.cpu.stack_pointer == 0 {
             eprintln!("WARNING: stack full, next push will overflow!");
         }
-        self.memory[STACK_BASE + self.cpu.stack_pointer as usize] = value;
+        self.memory[STACK_BASE as Address + self.cpu.stack_pointer as Address] = value;
         self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_sub(1);
     }
 
@@ -381,7 +414,7 @@ impl Nes {
 
     fn pop(&mut self) -> u8 {
         self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_add(1);
-        self.memory[STACK_BASE + self.cpu.stack_pointer as usize]
+        self.memory[STACK_BASE as Address + self.cpu.stack_pointer as Address]
     }
 
     fn pop_u16(&mut self) -> u16 {
@@ -414,7 +447,7 @@ impl Nes {
             B::IndirectX(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.x) as Address),
             B::IndirectY(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.y) as Address),
         };
-        self.memory[addr as usize]
+        self.memory[addr]
     }
 
     /// Modifies the byte located at `location`. Used in instructions which modify their arguments (e.g. ASL - Arithmetic Left Shift). Sets the zero and negative flags.
@@ -437,11 +470,10 @@ impl Nes {
             B::IndirectX(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.x) as Address),
             B::IndirectY(addr) => self.get_le_u16(addr.wrapping_add(self.cpu.y) as Address),
         };
-        self.memory[addr as usize] = value;
+        self.memory[addr] = value;
     }
 
     fn get_le_u16(&self, addr: Address) -> u16 {
-        let addr = addr as usize;
         ((self.memory[addr + 1] as u16) << 8) | self.memory[addr] as u16
     }
 
