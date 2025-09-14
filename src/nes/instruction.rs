@@ -1,3 +1,5 @@
+use sdl2::libc::iocb;
+
 use crate::nes::Address;
 use crate::nes::cpu::ShortAddress;
 
@@ -92,7 +94,7 @@ pub enum Instruction {
     Jump(JumpAddress),
 
     /// JSR: Pushes the current program counter + 2 to the stack and sets it to a new value. Execution can then return by using RTS.
-    JumpToSubroutine(Address),
+    JumpToSubroutine(ByteLocation),
 
     /// LDA: Loads a memory value into the accumulator.
     LoadAcc(ByteLocation),
@@ -332,6 +334,7 @@ pub enum DecodeError {
 
 impl Instruction {
     pub fn decode(data: &[u8]) -> Result<(&[u8], Instruction), DecodeError> {
+        use Instruction as I;
         let (data, opcode) = data.take_one()?;
         let (data, instruction) = match opcode {
             0x69 | 0x65 | 0x75 | 0x6D | 0x7D | 0x79 | 0x61 | 0x71 => {
@@ -353,12 +356,84 @@ impl Instruction {
             0x00 => {
                 // The return address that is pushed to the stack skips the following byte (current program counter + 2), so we shift data by 1.
                 let (data, _) = data.take_one()?;
-                (data, Instruction::Break)
+                (data, I::Break)
             }
             0x50 => build_instruction_with_branch!(BranchIfOverflowClear, data),
             0x70 => build_instruction_with_branch!(BranchIfOverflowSet, data),
-            0x18 => (data, Instruction::ClearCarry),
-            0xD8 => (data, Instruction::ClearDecimal),
+            0x18 => (data, I::ClearCarry),
+            0xD8 => (data, I::ClearDecimal),
+            0x58 => (data, I::ClearInterruptDisable),
+            0xB8 => (data, I::ClearInterruptDisable),
+            0xC9 | 0xC5 | 0xD5 | 0xCD | 0xDD | 0xD9 | 0xC1 | 0xD1 => {
+                build_instruction_with_location!(CompareAcc, opcode, data)
+            }
+            0xE0 | 0xE4 | 0xEC => build_instruction_with_location!(CompareX, opcode, data),
+            0xC0 | 0xC4 | 0xCC => build_instruction_with_location!(CompareY, opcode, data),
+            0xC6 | 0xD6 | 0xCE | 0xDE => {
+                build_instruction_with_location!(DecrementMemory, opcode, data)
+            }
+            0xCA => (data, I::DecrementX),
+            0x88 => (data, I::DecrementY),
+
+            0x49 | 0x45 | 0x55 | 0x4D | 0x5D | 0x59 | 0x41 | 0x51 => {
+                build_instruction_with_location!(BitwiseExclusiveOr, opcode, data)
+            }
+
+            0xE6 | 0xF6 | 0xEE | 0xFE => {
+                build_instruction_with_location!(IncrementMemory, opcode, data)
+            }
+
+            0xE8 => (data, I::IncrementX),
+            0xC8 => (data, I::IncrementY),
+
+            0x4C | 0x6C => {
+                let (data, [low, high]) = data.take()?;
+                let addr = ((high as Address) << 8) | (low as Address);
+                (
+                    data,
+                    I::Jump(match opcode {
+                        0x4C => JumpAddress::Absolute(addr),
+                        0x6C => JumpAddress::Indirect(addr),
+                        _ => unreachable!(),
+                    }),
+                )
+            }
+            0x20 => build_instruction_with_location!(JumpToSubroutine, opcode, data),
+            0xA9 | 0xA5 | 0xB5 | 0xAD | 0xBD | 0xB9 | 0xA1 | 0xB1 => {
+                build_instruction_with_location!(LoadAcc, opcode, data)
+            }
+            0xA2 | 0xA6 | 0xB6 | 0xAE | 0xBE => {
+                build_instruction_with_location!(LoadX, opcode, data)
+            }
+            0xA0 | 0xA4 | 0xB4 | 0xAC | 0xBC => {
+                build_instruction_with_location!(LoadY, opcode, data)
+            }
+            0x4A | 0x46 | 0x56 | 0x4E | 0x5E => {
+                build_instruction_with_location!(LogicalShiftRight, opcode, data)
+            }
+            0xEA => (data, I::NoOperation),
+
+            0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11 => {
+                build_instruction_with_location!(BitwiseOr, opcode, data)
+            }
+            0x48 => (data, I::PushAcc),
+            0x08 => (data, I::PushProcessorStatus),
+            0x68 => (data, I::PullAcc),
+            0x28 => (data, I::PullProcessorStatus),
+            0x2A | 0x26 | 0x36 | 0x2E | 0x3E => {
+                build_instruction_with_location!(RotateLeft, opcode, data)
+            }
+            0x6A | 0x66 | 0x76 | 0x6E | 0x7E => {
+                build_instruction_with_location!(RotateRight, opcode, data)
+            }
+            0x40 => (data, I::ReturnFromInterrupt),
+            0x60 => (data, I::ReturnFromSubroutine),
+            0xE9 | 0xE5 | 0xF5 | 0xED | 0xFD | 0xF9 | 0xE1 | 0xF1 => {
+                build_instruction_with_location!(SubtractWithCarry, opcode, data)
+            }
+            0x38 => (data, I::SetCarry),
+            0xF8 => (data, I::SetDecimal),
+            0x78 => (data, I::SetInterruptDisable),
 
             _ => return Err(DecodeError::InvalidOpcode(opcode)),
         };
