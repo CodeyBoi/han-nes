@@ -263,6 +263,20 @@ impl ByteLocationType {
 }
 
 impl ByteLocation {
+    pub const fn size(&self) -> usize {
+        use ByteLocation as B;
+        match self {
+            B::Accumulator => 0,
+            B::Immediate(_)
+            | B::ZeroPage(_)
+            | B::ZeroPageX(_)
+            | B::ZeroPageY(_)
+            | B::IndirectX(_)
+            | B::IndirectY(_) => 1,
+            B::Absolute(_) | B::AbsoluteX(_) | B::AbsoluteY(_) => 2,
+        }
+    }
+
     pub const fn cycles(&self) -> i128 {
         use ByteLocation as B;
         match self {
