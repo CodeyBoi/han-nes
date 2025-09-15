@@ -1,4 +1,4 @@
-use sdl2::libc::iocb;
+use thiserror::Error;
 
 use crate::nes::Address;
 use crate::nes::cpu::ShortAddress;
@@ -326,9 +326,11 @@ macro_rules! build_instruction_with_location {
     }};
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Error)]
 pub enum DecodeError {
+    #[error("invalid opcode: ${0:#X}")]
     InvalidOpcode(u8),
+    #[error("needs more data: {0} bytes")]
     NeedsMoreData(usize),
 }
 
@@ -434,6 +436,18 @@ impl Instruction {
             0x38 => (data, I::SetCarry),
             0xF8 => (data, I::SetDecimal),
             0x78 => (data, I::SetInterruptDisable),
+
+            0x85 | 0x95 | 0x8D | 0x9D | 0x99 | 0x81 | 0x91 => {
+                build_instruction_with_location!(StoreAcc, opcode, data)
+            }
+            0x86 | 0x96 | 0x8E => build_instruction_with_location!(StoreX, opcode, data),
+            0x84 | 0x94 | 0x8C => build_instruction_with_location!(StoreY, opcode, data),
+            0xAA => (data, I::TransferAccToX),
+            0xA8 => (data, I::TransferAccToY),
+            0xBA => (data, I::TransferStackPointerToX),
+            0x8A => (data, I::TransferXToAcc),
+            0x9A => (data, I::TransferXToStackPointer),
+            0x98 => (data, I::TransferYToAcc),
 
             _ => return Err(DecodeError::InvalidOpcode(opcode)),
         };

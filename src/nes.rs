@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::{
-    fs,
+    fs::{self, File},
     path::Path,
     thread,
     time::{Duration, Instant},
@@ -20,6 +21,8 @@ pub struct Nes {
     memory: MemoryMap,
     is_running: bool,
     cycle: u128,
+    should_log: bool,
+    executed_instructions: Vec<Instruction>,
 }
 
 // TODO: Create struct with different hardware values for the different regions so you can load them dynamically.
@@ -34,6 +37,8 @@ impl Default for Nes {
             memory: MemoryMap::new(),
             is_running: true,
             cycle: 0,
+            should_log: true,
+            executed_instructions: Vec::new(),
         }
     }
 }
@@ -92,6 +97,12 @@ impl Nes {
         let duration_per_cycle = Duration::from_nanos(1_000_000_000 / CLOCK_HZ as u64);
         let mut next_cycle = now;
 
+        let mut logfile = if self.should_log {
+            File::create("log").ok()
+        } else {
+            None
+        };
+
         while self.is_running {
             let now = Instant::now();
             let start = Instant::now();
@@ -108,6 +119,9 @@ impl Nes {
                 // TODO: Add an actual cycle count
                 let cycles = 7;
 
+                if let Some(ref mut logfile) = logfile {
+                    writeln!(logfile, "{:?}", instruction).expect("failed writing to logfile");
+                }
                 self.execute(instruction);
 
                 next_cycle += duration_per_cycle * cycles;
@@ -198,10 +212,13 @@ impl Nes {
                 };
                 self.cpu.pc = addr;
             }
-            I::JumpToSubroutine(addr) => {
-                self.push_u16(self.cpu.pc + 2);
-                self.cpu.pc = addr;
-            }
+            I::JumpToSubroutine(addr) => match addr {
+                ByteLocation::Absolute(addr) => {
+                    self.push_u16(self.cpu.pc + 2);
+                    self.cpu.pc = addr;
+                }
+                _ => unreachable!("invalid bytelocation for JumpToSubroutine"),
+            },
             I::LoadAcc(b) => self.cpu.acc_set(self.read(b)),
             I::LoadX(b) => self.cpu.x_set(self.read(b)),
             I::LoadY(b) => self.cpu.y_set(self.read(b)),

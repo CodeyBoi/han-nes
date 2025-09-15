@@ -145,6 +145,7 @@ dependencies = [
  "file-compresser",
  "rand",
  "sdl2",
+ "thiserror",
 ]
 
 [[package]]

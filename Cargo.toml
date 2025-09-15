@@ -8,3 +8,4 @@ clap = { version = "4.5.38", features = ["derive"] }
 file-compresser = { git = "ssh://git@github.com/CodeyBoi/file-comprs.git", version = "0.1.0" }
 rand = "0.9.1"
 sdl2 = "0.37.0"
+thiserror = "2.0.16"
