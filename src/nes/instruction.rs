@@ -3,50 +3,38 @@ use thiserror::Error;
 use crate::nes::Address;
 use crate::nes::cpu::ShortAddress;
 
-type Relative = i8;
+type Offset = i8;
 
 /// Info about 6502 instructions have been taken from https://www.nesdev.org/wiki/Instruction_reference.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Instruction {
+    /// Instruction with pre-defined arguments, e.g. Break or IncrementX.
+    Implied(ImpliedInstruction),
+
+    /// Instruction which targets and reads from or writes to a register or location in memory.
+    Memory {
+        instruction: MemoryInstruction,
+        target: MemoryTarget,
+    },
+
+    /// Instruction which checks for a condition and then applies an offset to the program counter depending on the result.
+    Branch {
+        instruction: BranchInstruction,
+        offset: Offset,
+    },
+
+    /// JMP: Sets the program counter to a new value. If you want to return from that location, JSR (JumpToSubroutine) should be used instead.
+    Jump(JumpAddress),
+
+    /// JSR: Pushes the current program counter + 2 to the stack and sets it to a new value. Execution can then return by using RTS.
+    JumpToSubroutine(Address),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ImpliedInstruction {
     // Official instructions
-    /// ADC: Adds the carry flag and a memory value to the accumulator.
-    AddWithCarry(ByteLocation),
-
-    /// AND: Performs bitwise AND on accumulator with a memory value.
-    BitwiseAnd(ByteLocation),
-
-    /// ASL: Shifts all bits in value left, moving the value of each bit into the next bit. Bit 7 is shifted into the carry flag, and bit 0 is cleared.
-    ArithmeticShiftLeft(ByteLocation),
-
-    /// BCC: Add value to program counter if carry flag is clear.
-    BranchIfCarryClear(Relative),
-
-    /// BCS: Add value to program counter if carry flag is set.
-    BranchIfCarrySet(Relative),
-
-    /// BEQ: Add value to program counter if zero flag is set.
-    BranchIfEqual(Relative),
-
-    /// BIT: Modfies flags, but does not change memory or registers. Zero flag is set if accumulator & memory value == 0. Bits 7 and 6 are loaded directly into the negative and overflow flags.
-    BitTest(ByteLocation),
-
-    /// BMI: Add value to program counter if negative flag is set.
-    BranchIfMinus(Relative),
-
-    /// BEQ: Add value to program counter if zero flag is clear.
-    BranchIfNotEqual(Relative),
-
-    /// BPL: Add value to program counter if negative flag is clear.
-    BranchIfPlus(Relative),
-
     /// BRK: Software interrupt. Pushes program counter and flags to stack and sets program counter to $FFFE.
     Break,
-
-    /// BVC: Add value to program counter if overflow flag is clear.
-    BranchIfOverflowClear(Relative),
-
-    /// BVC: Add value to program counter if overflow flag is set.
-    BranchIfOverflowSet(Relative),
 
     /// CLC: Clear the carry flag.
     ClearCarry,
@@ -60,29 +48,11 @@ pub enum Instruction {
     /// CLV: Clear the overflow flag.
     ClearOverflow,
 
-    /// CMP: Compares the accumulator to a memory value via a subtraction that sets status flags but doesn't modify any register values. NOTE: Does NOT affect the overflow flag.
-    CompareAcc(ByteLocation),
-
-    /// CPX: Like CompareAcc, but using the X register instead.
-    CompareX(ByteLocation),
-
-    /// CPY: Like CompareAcc, but using the Y register instead.
-    CompareY(ByteLocation),
-
-    /// DEC: Decrements a memory location. Cannot be used for decrementing the accumulator; ADC or SBC must be used instead. NOTE: Does NOT affect the carry nor overflow flags.
-    DecrementMemory(ByteLocation),
-
     /// DEX: Decrements the X register. NOTE: Does NOT affect the carry nor overflow flags.
     DecrementX,
 
     /// DEY: Decrements the Y register. NOTE: Does NOT affect the carry nor overflow flags.
     DecrementY,
-
-    /// EOR: Exclusive bitwise OR on a memory value and the accumulator and writes to the accumulator.
-    BitwiseExclusiveOr(ByteLocation),
-
-    /// INC: Increments a memory location. Cannot be used for incrementing the accumulator; ADC or SBC must be used instead. NOTE: Does NOT affect the carry nor overflow flags.
-    IncrementMemory(ByteLocation),
 
     /// INX: Increments the X register. NOTE: Does NOT affect the carry nor overflow flags.
     IncrementX,
@@ -90,29 +60,8 @@ pub enum Instruction {
     /// INY: Increments the Y register. NOTE: Does NOT affect the carry nor overflow flags.
     IncrementY,
 
-    /// JMP: Sets the program counter to a new value. If you want to return from that location, JSR (JumpToSubroutine) should be used instead.
-    Jump(JumpAddress),
-
-    /// JSR: Pushes the current program counter + 2 to the stack and sets it to a new value. Execution can then return by using RTS.
-    JumpToSubroutine(ByteLocation),
-
-    /// LDA: Loads a memory value into the accumulator.
-    LoadAcc(ByteLocation),
-
-    /// LDA: Loads a memory value into the X register.
-    LoadX(ByteLocation),
-
-    /// LDA: Loads a memory value into the Y register.
-    LoadY(ByteLocation),
-
-    /// LSR: Shifts all the bits in the accumulator or a memory value one position to the right. Lowest bit is shifted into the carry flag.
-    LogicalShiftRight(ByteLocation),
-
     /// NOP: Does nothing. Used for padding.
     NoOperation,
-
-    /// ORA: Bitwise ORs the accumulator and a memory value.
-    BitwiseOr(ByteLocation),
 
     /// PHA: Push accumulator value to stack.
     PushAcc,
@@ -126,20 +75,11 @@ pub enum Instruction {
     /// PLP: Pops the top value from the stack and stores it in the status flag register. The B and unused flags are ignored.
     PullProcessorStatus,
 
-    /// ROL: Shifts a memory value or the accumulator to the left. The highest bit is rotated into the carry flag, and the carry flag is rotated into the lowest bit.
-    RotateLeft(ByteLocation),
-
-    /// ROL: Shifts a memory value or the accumulator to the right. The lowest bit is rotated into the carry flag, and the carry flag is rotated into the highest bit.
-    RotateRight(ByteLocation),
-
     /// RTI: Returns from an interrupt handler by popping the status register and then the program counter from the stack.
     ReturnFromInterrupt,
 
     /// RTS: Returns from a subroutine by popping the program counter from stack and then incrementing the program counter.
     ReturnFromSubroutine,
-
-    /// SBC: Subtracts a memory value and the bitwise negation of the carry flag from the accumulator.
-    SubtractWithCarry(ByteLocation),
 
     /// SEC: Sets the carry flag.
     SetCarry,
@@ -149,15 +89,6 @@ pub enum Instruction {
 
     /// SEI: Sets the interrupt disable flag.
     SetInterruptDisable,
-
-    /// STA: Stores the accumulator value into memory.
-    StoreAcc(ByteLocation),
-
-    /// STX: Stores the X register value into memory.
-    StoreX(ByteLocation),
-
-    /// STY: Stores the Y register value into memory.
-    StoreY(ByteLocation),
 
     /// TAX: Copies the accumulator value into the X register.
     TransferAccToX,
@@ -178,9 +109,105 @@ pub enum Instruction {
     TransferYToAcc,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum MemoryInstruction {
+    /// ADC: Adds the carry flag and a memory value to the accumulator.
+    AddWithCarry,
+
+    /// AND: Performs bitwise AND on accumulator with a memory value.
+    BitwiseAnd,
+
+    /// ASL: Shifts all bits in value left, moving the value of each bit into the next bit. Bit 7 is shifted into the carry flag, and bit 0 is cleared.
+    ArithmeticShiftLeft,
+
+    /// BIT: Modfies flags, but does not change memory or registers. Zero flag is set if accumulator & memory value == 0. Bits 7 and 6 are loaded directly into the negative and overflow flags.
+    BitTest,
+
+    /// CMP: Compares the accumulator to a memory value via a subtraction that sets status flags but doesn't modify any register values. NOTE: Does NOT affect the overflow flag.
+    CompareAcc,
+
+    /// CPX: Like CompareAcc, but using the X register instead.
+    CompareX,
+
+    /// CPY: Like CompareAcc, but using the Y register instead.
+    CompareY,
+
+    /// DEC: Decrements a memory location. Cannot be used for decrementing the accumulator; ADC or SBC must be used instead. NOTE: Does NOT affect the carry nor overflow flags.
+    DecrementMemory,
+
+    /// EOR: Exclusive bitwise OR on a memory value and the accumulator and writes to the accumulator.
+    BitwiseExclusiveOr,
+
+    /// INC: Increments a memory location. Cannot be used for incrementing the accumulator; ADC or SBC must be used instead. NOTE: Does NOT affect the carry nor overflow flags.
+    IncrementMemory,
+
+    /// LDA: Loads a memory value into the accumulator.
+    LoadAcc,
+
+    /// LDA: Loads a memory value into the X register.
+    LoadX,
+
+    /// LDA: Loads a memory value into the Y register.
+    LoadY,
+
+    /// LSR: Shifts all the bits in the accumulator or a memory value one position to the right. Lowest bit is shifted into the carry flag.
+    LogicalShiftRight,
+
+    /// ORA: Bitwise ORs the accumulator and a memory value.
+    BitwiseOr,
+
+    /// ROL: Shifts a memory value or the accumulator to the left. The highest bit is rotated into the carry flag, and the carry flag is rotated into the lowest bit.
+    RotateLeft,
+
+    /// ROL: Shifts a memory value or the accumulator to the right. The lowest bit is rotated into the carry flag, and the carry flag is rotated into the highest bit.
+    RotateRight,
+
+    /// SBC: Subtracts a memory value and the bitwise negation of the carry flag from the accumulator.
+    SubtractWithCarry,
+
+    /// STA: Stores the accumulator value into memory.
+    StoreAcc,
+
+    /// STX: Stores the X register value into memory.
+    StoreX,
+
+    /// STY: Stores the Y register value into memory.
+    StoreY,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum BranchInstruction {
+    /// BCC: Add value to program counter if carry flag is clear.
+    BranchIfCarryClear,
+
+    /// BCS: Add value to program counter if carry flag is set.
+    BranchIfCarrySet,
+
+    /// BEQ: Add value to program counter if zero flag is set.
+    BranchIfEqual,
+
+    /// BMI: Add value to program counter if negative flag is set.
+    BranchIfMinus,
+
+    /// BEQ: Add value to program counter if zero flag is clear.
+    BranchIfNotEqual,
+
+    /// BPL: Add value to program counter if negative flag is clear.
+    BranchIfPlus,
+
+    /// BVC: Add value to program counter if overflow flag is clear.
+    BranchIfOverflowClear,
+
+    /// BVC: Add value to program counter if overflow flag is set.
+    BranchIfOverflowSet,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Target {}
+
 /// 6502 Addressing Modes. Defines different possible formats for fetching instructions arguments. More info about this can be found at https://www.nesdev.org/obelisk-6502-guide/addressing.html.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ByteLocation {
+pub enum MemoryTarget {
     /// The value in the A register.
     Accumulator,
 
@@ -262,9 +289,9 @@ impl ByteLocationType {
     }
 }
 
-impl ByteLocation {
+impl MemoryTarget {
     pub const fn size(&self) -> usize {
-        use ByteLocation as B;
+        use MemoryTarget as B;
         match self {
             B::Accumulator => 0,
             B::Immediate(_)
@@ -278,7 +305,7 @@ impl ByteLocation {
     }
 
     pub const fn cycles(&self) -> i128 {
-        use ByteLocation as B;
+        use MemoryTarget as B;
         match self {
             B::Accumulator => 1,
             B::Immediate(_) => 1,
@@ -326,17 +353,40 @@ impl<'a> Take for &'a [u8] {
     }
 }
 
-macro_rules! build_instruction_with_branch {
+macro_rules! implied_instruction {
     ($instruction:ident, $data:ident) => {{
-        let (data, offset) = $data.take_one()?;
-        (data, Instruction::$instruction(offset as i8))
+        (
+            $data,
+            Instruction::Implied(ImpliedInstruction::$instruction),
+        )
     }};
 }
 
-macro_rules! build_instruction_with_location {
+macro_rules! byte_instruction {
     ($instruction:ident, $opcode:ident, $data:ident) => {{
-        let (data, location) = Self::location($data, ByteLocationType::from_opcode($opcode))?;
-        (data, Instruction::$instruction(location))
+        let (data, location) =
+            Instruction::location($data, ByteLocationType::from_opcode($opcode))?;
+
+        (
+            data,
+            Instruction::Memory {
+                instruction: MemoryInstruction::$instruction,
+                target: location,
+            },
+        )
+    }};
+}
+
+macro_rules! branch_instruction {
+    ($instruction:ident, $data:ident) => {{
+        let (data, offset) = $data.take_one()?;
+        (
+            data,
+            Instruction::Branch {
+                instruction: BranchInstruction::$instruction,
+                offset: offset as i8,
+            },
+        )
     }};
 }
 
@@ -354,53 +404,53 @@ impl Instruction {
         let (data, opcode) = data.take_one()?;
         let (data, instruction) = match opcode {
             0x69 | 0x65 | 0x75 | 0x6D | 0x7D | 0x79 | 0x61 | 0x71 => {
-                build_instruction_with_location!(AddWithCarry, opcode, data)
+                byte_instruction!(AddWithCarry, opcode, data)
             }
             0x29 | 0x25 | 0x35 | 0x2D | 0x3D | 0x39 | 0x21 | 0x31 => {
-                build_instruction_with_location!(BitwiseAnd, opcode, data)
+                byte_instruction!(BitwiseAnd, opcode, data)
             }
             0x0A | 0x06 | 0x16 | 0x0E | 0x1E => {
-                build_instruction_with_location!(ArithmeticShiftLeft, opcode, data)
+                byte_instruction!(ArithmeticShiftLeft, opcode, data)
             }
-            0x90 => build_instruction_with_branch!(BranchIfCarryClear, data),
-            0xB0 => build_instruction_with_branch!(BranchIfCarrySet, data),
-            0xF0 => build_instruction_with_branch!(BranchIfEqual, data),
-            0x24 | 0x2C => build_instruction_with_location!(BitTest, opcode, data),
-            0x30 => build_instruction_with_branch!(BranchIfMinus, data),
-            0xD0 => build_instruction_with_branch!(BranchIfNotEqual, data),
-            0x10 => build_instruction_with_branch!(BranchIfPlus, data),
+            0x90 => branch_instruction!(BranchIfCarryClear, data),
+            0xB0 => branch_instruction!(BranchIfCarrySet, data),
+            0xF0 => branch_instruction!(BranchIfEqual, data),
+            0x24 | 0x2C => byte_instruction!(BitTest, opcode, data),
+            0x30 => branch_instruction!(BranchIfMinus, data),
+            0xD0 => branch_instruction!(BranchIfNotEqual, data),
+            0x10 => branch_instruction!(BranchIfPlus, data),
             0x00 => {
                 // The return address that is pushed to the stack skips the following byte (current program counter + 2), so we shift data by 1.
                 let (data, _) = data.take_one()?;
-                (data, I::Break)
+                (data, I::Implied(ImpliedInstruction::Break))
             }
-            0x50 => build_instruction_with_branch!(BranchIfOverflowClear, data),
-            0x70 => build_instruction_with_branch!(BranchIfOverflowSet, data),
-            0x18 => (data, I::ClearCarry),
-            0xD8 => (data, I::ClearDecimal),
-            0x58 => (data, I::ClearInterruptDisable),
-            0xB8 => (data, I::ClearInterruptDisable),
+            0x50 => branch_instruction!(BranchIfOverflowClear, data),
+            0x70 => branch_instruction!(BranchIfOverflowSet, data),
+            0x18 => implied_instruction!(ClearCarry, data),
+            0xD8 => implied_instruction!(ClearDecimal, data),
+            0x58 => implied_instruction!(ClearInterruptDisable, data),
+            0xB8 => implied_instruction!(ClearInterruptDisable, data),
             0xC9 | 0xC5 | 0xD5 | 0xCD | 0xDD | 0xD9 | 0xC1 | 0xD1 => {
-                build_instruction_with_location!(CompareAcc, opcode, data)
+                byte_instruction!(CompareAcc, opcode, data)
             }
-            0xE0 | 0xE4 | 0xEC => build_instruction_with_location!(CompareX, opcode, data),
-            0xC0 | 0xC4 | 0xCC => build_instruction_with_location!(CompareY, opcode, data),
+            0xE0 | 0xE4 | 0xEC => byte_instruction!(CompareX, opcode, data),
+            0xC0 | 0xC4 | 0xCC => byte_instruction!(CompareY, opcode, data),
             0xC6 | 0xD6 | 0xCE | 0xDE => {
-                build_instruction_with_location!(DecrementMemory, opcode, data)
+                byte_instruction!(DecrementMemory, opcode, data)
             }
-            0xCA => (data, I::DecrementX),
-            0x88 => (data, I::DecrementY),
+            0xCA => implied_instruction!(DecrementX, data),
+            0x88 => implied_instruction!(DecrementY, data),
 
             0x49 | 0x45 | 0x55 | 0x4D | 0x5D | 0x59 | 0x41 | 0x51 => {
-                build_instruction_with_location!(BitwiseExclusiveOr, opcode, data)
+                byte_instruction!(BitwiseExclusiveOr, opcode, data)
             }
 
             0xE6 | 0xF6 | 0xEE | 0xFE => {
-                build_instruction_with_location!(IncrementMemory, opcode, data)
+                byte_instruction!(IncrementMemory, opcode, data)
             }
 
-            0xE8 => (data, I::IncrementX),
-            0xC8 => (data, I::IncrementY),
+            0xE8 => implied_instruction!(IncrementX, data),
+            0xC8 => implied_instruction!(IncrementY, data),
 
             0x4C | 0x6C => {
                 let (data, [low, high]) = data.take()?;
@@ -414,54 +464,58 @@ impl Instruction {
                     }),
                 )
             }
-            0x20 => build_instruction_with_location!(JumpToSubroutine, opcode, data),
+            0x20 => {
+                let (data, [low, high]) = data.take()?;
+                let addr = ((high as Address) << 8) | (low as Address);
+                (data, I::JumpToSubroutine(addr))
+            }
             0xA9 | 0xA5 | 0xB5 | 0xAD | 0xBD | 0xB9 | 0xA1 | 0xB1 => {
-                build_instruction_with_location!(LoadAcc, opcode, data)
+                byte_instruction!(LoadAcc, opcode, data)
             }
             0xA2 | 0xA6 | 0xB6 | 0xAE | 0xBE => {
-                build_instruction_with_location!(LoadX, opcode, data)
+                byte_instruction!(LoadX, opcode, data)
             }
             0xA0 | 0xA4 | 0xB4 | 0xAC | 0xBC => {
-                build_instruction_with_location!(LoadY, opcode, data)
+                byte_instruction!(LoadY, opcode, data)
             }
             0x4A | 0x46 | 0x56 | 0x4E | 0x5E => {
-                build_instruction_with_location!(LogicalShiftRight, opcode, data)
+                byte_instruction!(LogicalShiftRight, opcode, data)
             }
-            0xEA => (data, I::NoOperation),
+            0xEA => implied_instruction!(NoOperation, data),
 
             0x09 | 0x05 | 0x15 | 0x0D | 0x1D | 0x19 | 0x01 | 0x11 => {
-                build_instruction_with_location!(BitwiseOr, opcode, data)
+                byte_instruction!(BitwiseOr, opcode, data)
             }
-            0x48 => (data, I::PushAcc),
-            0x08 => (data, I::PushProcessorStatus),
-            0x68 => (data, I::PullAcc),
-            0x28 => (data, I::PullProcessorStatus),
+            0x48 => implied_instruction!(PushAcc, data),
+            0x08 => implied_instruction!(PushProcessorStatus, data),
+            0x68 => implied_instruction!(PullAcc, data),
+            0x28 => implied_instruction!(PullProcessorStatus, data),
             0x2A | 0x26 | 0x36 | 0x2E | 0x3E => {
-                build_instruction_with_location!(RotateLeft, opcode, data)
+                byte_instruction!(RotateLeft, opcode, data)
             }
             0x6A | 0x66 | 0x76 | 0x6E | 0x7E => {
-                build_instruction_with_location!(RotateRight, opcode, data)
+                byte_instruction!(RotateRight, opcode, data)
             }
-            0x40 => (data, I::ReturnFromInterrupt),
-            0x60 => (data, I::ReturnFromSubroutine),
+            0x40 => implied_instruction!(ReturnFromInterrupt, data),
+            0x60 => implied_instruction!(ReturnFromSubroutine, data),
             0xE9 | 0xE5 | 0xF5 | 0xED | 0xFD | 0xF9 | 0xE1 | 0xF1 => {
-                build_instruction_with_location!(SubtractWithCarry, opcode, data)
+                byte_instruction!(SubtractWithCarry, opcode, data)
             }
-            0x38 => (data, I::SetCarry),
-            0xF8 => (data, I::SetDecimal),
-            0x78 => (data, I::SetInterruptDisable),
+            0x38 => implied_instruction!(SetCarry, data),
+            0xF8 => implied_instruction!(SetDecimal, data),
+            0x78 => implied_instruction!(SetInterruptDisable, data),
 
             0x85 | 0x95 | 0x8D | 0x9D | 0x99 | 0x81 | 0x91 => {
-                build_instruction_with_location!(StoreAcc, opcode, data)
+                byte_instruction!(StoreAcc, opcode, data)
             }
-            0x86 | 0x96 | 0x8E => build_instruction_with_location!(StoreX, opcode, data),
-            0x84 | 0x94 | 0x8C => build_instruction_with_location!(StoreY, opcode, data),
-            0xAA => (data, I::TransferAccToX),
-            0xA8 => (data, I::TransferAccToY),
-            0xBA => (data, I::TransferStackPointerToX),
-            0x8A => (data, I::TransferXToAcc),
-            0x9A => (data, I::TransferXToStackPointer),
-            0x98 => (data, I::TransferYToAcc),
+            0x86 | 0x96 | 0x8E => byte_instruction!(StoreX, opcode, data),
+            0x84 | 0x94 | 0x8C => byte_instruction!(StoreY, opcode, data),
+            0xAA => implied_instruction!(TransferAccToX, data),
+            0xA8 => implied_instruction!(TransferAccToY, data),
+            0xBA => implied_instruction!(TransferStackPointerToX, data),
+            0x8A => implied_instruction!(TransferXToAcc, data),
+            0x9A => implied_instruction!(TransferXToStackPointer, data),
+            0x98 => implied_instruction!(TransferYToAcc, data),
 
             _ => return Err(DecodeError::InvalidOpcode(opcode)),
         };
@@ -472,9 +526,9 @@ impl Instruction {
     fn location(
         data: &[u8],
         byte_type: ByteLocationType,
-    ) -> Result<(&[u8], ByteLocation), DecodeError> {
-        use ByteLocation as B;
+    ) -> Result<(&[u8], MemoryTarget), DecodeError> {
         use ByteLocationType as BT;
+        use MemoryTarget as B;
         match byte_type {
             BT::Accumulator => Ok((data, B::Accumulator)),
             BT::Immediate => {
@@ -520,25 +574,45 @@ impl Instruction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ByteLocation as B;
+    use BranchInstruction as BI;
     use Instruction as I;
+    use MemoryInstruction as MI;
+    use MemoryTarget as B;
 
     #[test]
     fn test_decode() {
         let data = [0x16, 0x55, 0x30, -0x12i8 as u8, 0x3D, 0xAD, 0xDE].as_slice();
         assert_eq!(
             I::decode(data),
-            Ok((&data[2..], I::ArithmeticShiftLeft(B::ZeroPageX(0x55))))
+            Ok((
+                &data[2..],
+                I::Memory {
+                    instruction: MI::ArithmeticShiftLeft,
+                    target: B::ZeroPageX(0x55)
+                }
+            ))
         );
 
         assert_eq!(
             I::decode(&data[2..]),
-            Ok((&data[4..], I::BranchIfMinus(-0x12)))
+            Ok((
+                &data[4..],
+                I::Branch {
+                    instruction: BI::BranchIfMinus,
+                    offset: -0x12,
+                }
+            ))
         );
 
         assert_eq!(
             I::decode(&data[4..]),
-            Ok((&data[7..], I::BitwiseAnd(B::AbsoluteX(0xDEAD))))
+            Ok((
+                &data[7..],
+                I::Memory {
+                    instruction: MI::BitwiseAnd,
+                    target: B::AbsoluteX(0xDEAD)
+                }
+            ))
         );
 
         assert_eq!(I::decode(&data[7..]), Err(DecodeError::NeedsMoreData(1)));

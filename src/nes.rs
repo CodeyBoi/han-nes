@@ -7,7 +7,7 @@ use std::{
 };
 
 use cpu::{Address, Cpu, Interrupt, Status};
-use instruction::{ByteLocation, Instruction, JumpAddress, Take as _};
+use instruction::{Instruction, JumpAddress, MemoryTarget, Take as _};
 use memory::{MemoryMap, STACK_BASE};
 
 use crate::bits::BitAddressable;
@@ -135,66 +135,140 @@ impl Nes {
 
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
+        use instruction::BranchInstruction as BI;
+        use instruction::ImpliedInstruction as II;
+        use instruction::MemoryInstruction as MI;
+
         match instruction {
-            I::AddWithCarry(b) => {
-                self.cpu.acc_add(self.read(b) + self.cpu.status.carry as u8);
-            }
-            I::BitwiseAnd(b) => {
-                self.cpu.acc_set(self.cpu.acc & self.read(b));
-            }
-            I::ArithmeticShiftLeft(b) => {
-                let value = self.read(b);
-                let shifted = value << 1;
-                self.cpu.status.carry = value.bit(7);
-                self.write(b, shifted);
-            }
-            I::BranchIfCarryClear(offset) => {
-                self.branch(offset, !self.cpu.status.carry);
-            }
-            I::BranchIfCarrySet(offset) => {
-                self.branch(offset, self.cpu.status.carry);
-            }
-            I::BranchIfEqual(offset) => {
-                self.branch(offset, self.cpu.status.zero);
-            }
-            I::BitTest(b) => {
-                let value = self.read(b);
-                self.cpu.status = Status {
-                    zero: (self.cpu.acc & value) == 0,
-                    overflow: value.bit(6),
-                    negative: value.bit(7),
-                    ..self.cpu.status
-                };
-            }
-            I::BranchIfMinus(offset) => self.branch(offset, self.cpu.status.negative),
-            I::BranchIfNotEqual(offset) => self.branch(offset, !self.cpu.status.zero),
-            I::BranchIfPlus(offset) => self.branch(offset, !self.cpu.status.negative),
-            I::Break => {
-                self.push_u16(self.cpu.pc + 2);
-                let pushed_status = Status {
-                    interrupt: Interrupt::Software,
-                    ..self.cpu.status
-                };
-                self.push(pushed_status.into());
-                self.cpu.status.interrupt_disable = true;
-                self.cpu.pc = 0xFFFE;
-            }
-            I::BranchIfOverflowClear(offset) => self.branch(offset, !self.cpu.status.overflow),
-            I::BranchIfOverflowSet(offset) => self.branch(offset, self.cpu.status.overflow),
-            I::ClearCarry => self.cpu.status.carry = false,
-            I::ClearDecimal => self.cpu.status.decimal_mode = false,
-            I::ClearInterruptDisable => self.cpu.status.interrupt_disable = false,
-            I::ClearOverflow => self.cpu.status.overflow = false,
-            I::CompareAcc(b) => self.cpu.status = self.compare(self.cpu.acc, self.read(b)),
-            I::CompareX(b) => self.cpu.status = self.compare(self.cpu.x, self.read(b)),
-            I::CompareY(b) => self.cpu.status = self.compare(self.cpu.y, self.read(b)),
-            I::DecrementMemory(b) => self.write(b, self.read(b).wrapping_sub(1)),
-            I::DecrementX => self.cpu.x_set(self.cpu.x.wrapping_sub(1)),
-            I::DecrementY => self.cpu.y_set(self.cpu.y.wrapping_sub(1)),
-            I::BitwiseExclusiveOr(b) => self.cpu.acc_set(self.cpu.acc ^ self.read(b)),
-            I::IncrementMemory(b) => self.write(b, self.read(b).wrapping_add(1)),
-            I::IncrementX => self.cpu.x_set(self.cpu.x.wrapping_add(1)),
-            I::IncrementY => self.cpu.y_set(self.cpu.y.wrapping_add(1)),
+            I::Implied(implied_instruction) => match implied_instruction {
+                II::Break => {
+                    self.push_u16(self.cpu.pc + 2);
+                    let pushed_status = Status {
+                        interrupt: Interrupt::Software,
+                        ..self.cpu.status
+                    };
+                    self.push(pushed_status.into());
+                    self.cpu.status.interrupt_disable = true;
+                    self.cpu.pc = 0xFFFE;
+                }
+                II::ClearCarry => self.cpu.status.carry = false,
+                II::ClearDecimal => self.cpu.status.decimal_mode = false,
+                II::ClearInterruptDisable => self.cpu.status.interrupt_disable = false,
+                II::ClearOverflow => self.cpu.status.overflow = false,
+                II::DecrementX => self.cpu.x_set(self.cpu.x.wrapping_sub(1)),
+                II::DecrementY => self.cpu.y_set(self.cpu.y.wrapping_sub(1)),
+                II::IncrementX => self.cpu.x_set(self.cpu.x.wrapping_add(1)),
+                II::IncrementY => self.cpu.y_set(self.cpu.y.wrapping_add(1)),
+                II::NoOperation => {}
+                II::PushAcc => self.push(self.cpu.acc),
+                II::PushProcessorStatus => self.push(self.cpu.status.into()),
+                II::PullAcc => {
+                    let acc = self.pop();
+                    self.cpu.acc_set(acc);
+                }
+                II::PullProcessorStatus => {
+                    let status = self.pop();
+                    self.cpu.status = status.into();
+                }
+                II::ReturnFromInterrupt => {
+                    let status = self.pop();
+                    self.cpu.status = status.into();
+                    let program_counter = self.pop_u16();
+                    self.cpu.pc = program_counter;
+                }
+                II::ReturnFromSubroutine => {
+                    let program_counter = self.pop_u16() + 1;
+                    self.cpu.pc = program_counter;
+                }
+                II::SetCarry => self.cpu.status.carry = true,
+                II::SetDecimal => self.cpu.status.decimal_mode = true,
+                II::SetInterruptDisable => self.cpu.status.interrupt_disable = true,
+                II::TransferAccToX => self.cpu.x_set(self.cpu.acc),
+                II::TransferAccToY => self.cpu.y_set(self.cpu.acc),
+                II::TransferStackPointerToX => self.cpu.x_set(self.cpu.stack_pointer),
+                II::TransferXToAcc => self.cpu.acc_set(self.cpu.x),
+                II::TransferXToStackPointer => self.cpu.stack_pointer = self.cpu.x,
+                II::TransferYToAcc => self.cpu.acc_set(self.cpu.y),
+            },
+            I::Memory {
+                instruction,
+                target: b,
+            } => match instruction {
+                MI::AddWithCarry => {
+                    self.cpu.acc_add(self.read(b) + self.cpu.status.carry as u8);
+                }
+                MI::BitwiseAnd => {
+                    self.cpu.acc_set(self.cpu.acc & self.read(b));
+                }
+                MI::ArithmeticShiftLeft => {
+                    let value = self.read(b);
+                    let shifted = value << 1;
+                    self.cpu.status.carry = value.bit(7);
+                    self.write(b, shifted);
+                }
+                MI::BitTest => {
+                    let value = self.read(b);
+                    self.cpu.status = Status {
+                        zero: (self.cpu.acc & value) == 0,
+                        overflow: value.bit(6),
+                        negative: value.bit(7),
+                        ..self.cpu.status
+                    };
+                }
+                MI::CompareAcc => self.cpu.status = self.compare(self.cpu.acc, self.read(b)),
+                MI::CompareX => self.cpu.status = self.compare(self.cpu.x, self.read(b)),
+                MI::CompareY => self.cpu.status = self.compare(self.cpu.y, self.read(b)),
+                MI::DecrementMemory => self.write(b, self.read(b).wrapping_sub(1)),
+                MI::BitwiseExclusiveOr => self.cpu.acc_set(self.cpu.acc ^ self.read(b)),
+                MI::IncrementMemory => self.write(b, self.read(b).wrapping_add(1)),
+                MI::LoadAcc => self.cpu.acc_set(self.read(b)),
+                MI::LoadX => self.cpu.x_set(self.read(b)),
+                MI::LoadY => self.cpu.y_set(self.read(b)),
+                MI::LogicalShiftRight => {
+                    let value = self.read(b);
+                    self.cpu.status.carry = value.bit(0);
+                    self.write(b, value >> 1);
+                }
+                MI::BitwiseOr => self.cpu.acc_set(self.cpu.acc | self.read(b)),
+                MI::RotateLeft => {
+                    let value = self.read(b);
+                    let rotated = (value << 1) | (self.cpu.status.carry as u8);
+                    self.cpu.status.carry = value.bit(7);
+                    self.write(b, rotated);
+                }
+                MI::RotateRight => {
+                    let value = self.read(b);
+                    let rotated = (value >> 1) | (self.cpu.status.carry as u8) << 7;
+                    self.cpu.status.carry = value.bit(0);
+                    self.write(b, rotated);
+                }
+                // TODO: Add tests for this. This might not be correct.
+                MI::SubtractWithCarry => self
+                    .cpu
+                    .acc_add(!self.read(b) + self.cpu.status.carry as u8),
+                MI::StoreAcc => self.write(b, self.cpu.acc),
+                MI::StoreX => self.write(b, self.cpu.x),
+                MI::StoreY => self.write(b, self.cpu.y),
+            },
+            I::Branch {
+                instruction,
+                offset,
+            } => match instruction {
+                BI::BranchIfCarryClear => {
+                    self.branch(offset, !self.cpu.status.carry);
+                }
+                BI::BranchIfCarrySet => {
+                    self.branch(offset, self.cpu.status.carry);
+                }
+                BI::BranchIfEqual => {
+                    self.branch(offset, self.cpu.status.zero);
+                }
+                BI::BranchIfMinus => self.branch(offset, self.cpu.status.negative),
+                BI::BranchIfNotEqual => self.branch(offset, !self.cpu.status.zero),
+                BI::BranchIfPlus => self.branch(offset, !self.cpu.status.negative),
+                BI::BranchIfOverflowClear => self.branch(offset, !self.cpu.status.overflow),
+                BI::BranchIfOverflowSet => self.branch(offset, self.cpu.status.overflow),
+            },
             I::Jump(jump_address) => {
                 let addr = match jump_address {
                     JumpAddress::Absolute(addr) => addr,
@@ -212,71 +286,10 @@ impl Nes {
                 };
                 self.cpu.pc = addr;
             }
-            I::JumpToSubroutine(addr) => match addr {
-                ByteLocation::Absolute(addr) => {
-                    self.push_u16(self.cpu.pc + 2);
-                    self.cpu.pc = addr;
-                }
-                _ => unreachable!("invalid bytelocation for JumpToSubroutine"),
-            },
-            I::LoadAcc(b) => self.cpu.acc_set(self.read(b)),
-            I::LoadX(b) => self.cpu.x_set(self.read(b)),
-            I::LoadY(b) => self.cpu.y_set(self.read(b)),
-            I::LogicalShiftRight(b) => {
-                let value = self.read(b);
-                self.cpu.status.carry = value.bit(0);
-                self.write(b, value >> 1);
+            I::JumpToSubroutine(addr) => {
+                self.push_u16(self.cpu.pc + 2);
+                self.cpu.pc = addr;
             }
-            I::NoOperation => {}
-            I::BitwiseOr(b) => self.cpu.acc_set(self.cpu.acc | self.read(b)),
-            I::PushAcc => self.push(self.cpu.acc),
-            I::PushProcessorStatus => self.push(self.cpu.status.into()),
-            I::PullAcc => {
-                let acc = self.pop();
-                self.cpu.acc_set(acc);
-            }
-            I::PullProcessorStatus => {
-                let status = self.pop();
-                self.cpu.status = status.into();
-            }
-            I::RotateLeft(b) => {
-                let value = self.read(b);
-                let rotated = (value << 1) | (self.cpu.status.carry as u8);
-                self.cpu.status.carry = value.bit(7);
-                self.write(b, rotated);
-            }
-            I::RotateRight(b) => {
-                let value = self.read(b);
-                let rotated = (value >> 1) | (self.cpu.status.carry as u8) << 7;
-                self.cpu.status.carry = value.bit(0);
-                self.write(b, rotated);
-            }
-            I::ReturnFromInterrupt => {
-                let status = self.pop();
-                self.cpu.status = status.into();
-                let program_counter = self.pop_u16();
-                self.cpu.pc = program_counter;
-            }
-            I::ReturnFromSubroutine => {
-                let program_counter = self.pop_u16() + 1;
-                self.cpu.pc = program_counter;
-            }
-            // TODO: Add tests for this. This might not be correct.
-            I::SubtractWithCarry(b) => self
-                .cpu
-                .acc_add(!self.read(b) + self.cpu.status.carry as u8),
-            I::SetCarry => self.cpu.status.carry = true,
-            I::SetDecimal => self.cpu.status.decimal_mode = true,
-            I::SetInterruptDisable => self.cpu.status.interrupt_disable = true,
-            I::StoreAcc(b) => self.write(b, self.cpu.acc),
-            I::StoreX(b) => self.write(b, self.cpu.x),
-            I::StoreY(b) => self.write(b, self.cpu.y),
-            I::TransferAccToX => self.cpu.x_set(self.cpu.acc),
-            I::TransferAccToY => self.cpu.y_set(self.cpu.acc),
-            I::TransferStackPointerToX => self.cpu.x_set(self.cpu.stack_pointer),
-            I::TransferXToAcc => self.cpu.acc_set(self.cpu.x),
-            I::TransferXToStackPointer => self.cpu.stack_pointer = self.cpu.x,
-            I::TransferYToAcc => self.cpu.acc_set(self.cpu.y),
         }
     }
 
@@ -315,25 +328,25 @@ impl Nes {
         }
     }
 
-    fn page_boundary_cycles(&self, location: ByteLocation) -> i128 {
+    fn page_boundary_cycles(&self, location: MemoryTarget) -> i128 {
         match location {
-            ByteLocation::AbsoluteX(addr) => {
+            MemoryTarget::AbsoluteX(addr) => {
                 ((addr + self.cpu.x as u16) % 0x100 < addr % 0x100) as i128
             }
-            ByteLocation::AbsoluteY(addr) => {
+            MemoryTarget::AbsoluteY(addr) => {
                 ((addr + self.cpu.y as u16) % 0x100 < addr % 0x100) as i128
             }
-            ByteLocation::IndirectY(addr) => {
+            MemoryTarget::IndirectY(addr) => {
                 ((addr as u16 + self.cpu.y as u16) % 0x100 < addr as u16 % 0x100) as i128
             }
             _ => 0,
         }
     }
 
-    /// Fetches the byte located at `location`. Used for fetching the actual argument values for instructions.
-    fn read(&self, location: ByteLocation) -> u8 {
-        use ByteLocation as B;
-        let addr = match location {
+    /// Fetches the byte located at `target`. Used for fetching the actual argument values for instructions.
+    fn read(&self, target: MemoryTarget) -> u8 {
+        use MemoryTarget as B;
+        let addr = match target {
             B::Accumulator => return self.cpu.acc,
             B::Immediate(v) => return v,
             B::ZeroPage(addr) => addr as Address,
@@ -349,8 +362,8 @@ impl Nes {
     }
 
     /// Modifies the byte located at `location`. Used in instructions which modify their arguments (e.g. ASL - Arithmetic Left Shift). Sets the zero and negative flags.
-    fn write(&mut self, location: ByteLocation, value: u8) {
-        use ByteLocation as B;
+    fn write(&mut self, location: MemoryTarget, value: u8) {
+        use MemoryTarget as B;
         self.cpu.status.zero = value == 0;
         self.cpu.status.negative = value.bit(7);
         let addr = match location {
@@ -559,8 +572,9 @@ mod tests {
 
     #[test]
     fn test_add_with_carry() {
-        use ByteLocation as B;
         use Instruction as I;
+        use MemoryTarget as B;
+        use instruction::MemoryInstruction::AddWithCarry;
         let mut nes = Nes::default();
         let addr = 0x10;
         let mem_value = 0x8;
@@ -569,16 +583,25 @@ mod tests {
         assert_eq!(nes.read(B::ZeroPage(addr)), mem_value);
 
         nes.cpu.acc_set(0);
-        nes.execute(I::AddWithCarry(B::Immediate(200)));
+        nes.execute(I::Memory {
+            instruction: AddWithCarry,
+            target: B::Immediate(200),
+        });
         assert_eq!(nes.read(B::Accumulator), 200);
         assert!(!nes.cpu.status.carry);
 
-        nes.execute(I::AddWithCarry(B::Immediate(100)));
+        nes.execute(I::Memory {
+            instruction: AddWithCarry,
+            target: B::Immediate(100),
+        });
         assert_eq!(nes.read(B::Accumulator), 200u8.wrapping_add(100));
         assert!(nes.cpu.status.carry);
 
         let old_acc = nes.read(B::Accumulator);
-        nes.execute(I::AddWithCarry(B::ZeroPage(addr)));
+        nes.execute(I::Memory {
+            instruction: AddWithCarry,
+            target: B::ZeroPage(addr),
+        });
         assert_eq!(nes.read(B::Accumulator), old_acc + mem_value + 1);
         assert!(!nes.cpu.status.carry);
     }
