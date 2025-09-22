@@ -15,6 +15,7 @@ use crate::bits::BitAddressable;
 mod cpu;
 mod instruction;
 mod memory;
+mod ppu;
 
 pub struct Nes {
     cpu: Cpu,
