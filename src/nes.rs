@@ -135,7 +135,7 @@ impl Nes {
 
     fn execute(&mut self, instruction: Instruction) {
         use Instruction as I;
-        use instruction::BranchInstruction as BI;
+        use instruction::BranchConditional as BI;
         use instruction::ImpliedInstruction as II;
         use instruction::MemoryInstruction as MI;
 
@@ -254,20 +254,20 @@ impl Nes {
                 instruction,
                 offset,
             } => match instruction {
-                BI::BranchIfCarryClear => {
+                BI::CarryClear => {
                     self.branch(offset, !self.cpu.status.carry);
                 }
-                BI::BranchIfCarrySet => {
+                BI::CarrySet => {
                     self.branch(offset, self.cpu.status.carry);
                 }
-                BI::BranchIfEqual => {
+                BI::Equal => {
                     self.branch(offset, self.cpu.status.zero);
                 }
-                BI::BranchIfMinus => self.branch(offset, self.cpu.status.negative),
-                BI::BranchIfNotEqual => self.branch(offset, !self.cpu.status.zero),
-                BI::BranchIfPlus => self.branch(offset, !self.cpu.status.negative),
-                BI::BranchIfOverflowClear => self.branch(offset, !self.cpu.status.overflow),
-                BI::BranchIfOverflowSet => self.branch(offset, self.cpu.status.overflow),
+                BI::Minus => self.branch(offset, self.cpu.status.negative),
+                BI::NotEqual => self.branch(offset, !self.cpu.status.zero),
+                BI::Plus => self.branch(offset, !self.cpu.status.negative),
+                BI::OverflowClear => self.branch(offset, !self.cpu.status.overflow),
+                BI::OverflowSet => self.branch(offset, self.cpu.status.overflow),
             },
             I::Jump(jump_address) => {
                 let addr = match jump_address {

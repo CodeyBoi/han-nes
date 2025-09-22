@@ -19,7 +19,7 @@ pub enum Instruction {
 
     /// Instruction which checks for a condition and then applies an offset to the program counter depending on the result.
     Branch {
-        instruction: BranchInstruction,
+        instruction: BranchConditional,
         offset: Offset,
     },
 
@@ -176,34 +176,31 @@ pub enum MemoryInstruction {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum BranchInstruction {
+pub enum BranchConditional {
     /// BCC: Add value to program counter if carry flag is clear.
-    BranchIfCarryClear,
+    CarryClear,
 
     /// BCS: Add value to program counter if carry flag is set.
-    BranchIfCarrySet,
+    CarrySet,
 
     /// BEQ: Add value to program counter if zero flag is set.
-    BranchIfEqual,
+    Equal,
 
     /// BMI: Add value to program counter if negative flag is set.
-    BranchIfMinus,
+    Minus,
 
     /// BEQ: Add value to program counter if zero flag is clear.
-    BranchIfNotEqual,
+    NotEqual,
 
     /// BPL: Add value to program counter if negative flag is clear.
-    BranchIfPlus,
+    Plus,
 
     /// BVC: Add value to program counter if overflow flag is clear.
-    BranchIfOverflowClear,
+    OverflowClear,
 
     /// BVC: Add value to program counter if overflow flag is set.
-    BranchIfOverflowSet,
+    OverflowSet,
 }
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Target {}
 
 /// 6502 Addressing Modes. Defines different possible formats for fetching instructions arguments. More info about this can be found at https://www.nesdev.org/obelisk-6502-guide/addressing.html.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,12 +375,12 @@ macro_rules! byte_instruction {
 }
 
 macro_rules! branch_instruction {
-    ($instruction:ident, $data:ident) => {{
+    ($condition:ident, $data:ident) => {{
         let (data, offset) = $data.take_one()?;
         (
             data,
             Instruction::Branch {
-                instruction: BranchInstruction::$instruction,
+                instruction: BranchConditional::$condition,
                 offset: offset as i8,
             },
         )
@@ -412,24 +409,24 @@ impl Instruction {
             0x0A | 0x06 | 0x16 | 0x0E | 0x1E => {
                 byte_instruction!(ArithmeticShiftLeft, opcode, data)
             }
-            0x90 => branch_instruction!(BranchIfCarryClear, data),
-            0xB0 => branch_instruction!(BranchIfCarrySet, data),
-            0xF0 => branch_instruction!(BranchIfEqual, data),
+            0x90 => branch_instruction!(CarryClear, data),
+            0xB0 => branch_instruction!(CarrySet, data),
+            0xF0 => branch_instruction!(Equal, data),
             0x24 | 0x2C => byte_instruction!(BitTest, opcode, data),
-            0x30 => branch_instruction!(BranchIfMinus, data),
-            0xD0 => branch_instruction!(BranchIfNotEqual, data),
-            0x10 => branch_instruction!(BranchIfPlus, data),
+            0x30 => branch_instruction!(Minus, data),
+            0xD0 => branch_instruction!(NotEqual, data),
+            0x10 => branch_instruction!(Plus, data),
             0x00 => {
                 // The return address that is pushed to the stack skips the following byte (current program counter + 2), so we shift data by 1.
                 let (data, _) = data.take_one()?;
                 (data, I::Implied(ImpliedInstruction::Break))
             }
-            0x50 => branch_instruction!(BranchIfOverflowClear, data),
-            0x70 => branch_instruction!(BranchIfOverflowSet, data),
+            0x50 => branch_instruction!(OverflowClear, data),
+            0x70 => branch_instruction!(OverflowSet, data),
             0x18 => implied_instruction!(ClearCarry, data),
             0xD8 => implied_instruction!(ClearDecimal, data),
             0x58 => implied_instruction!(ClearInterruptDisable, data),
-            0xB8 => implied_instruction!(ClearInterruptDisable, data),
+            0xB8 => implied_instruction!(ClearOverflow, data),
             0xC9 | 0xC5 | 0xD5 | 0xCD | 0xDD | 0xD9 | 0xC1 | 0xD1 => {
                 byte_instruction!(CompareAcc, opcode, data)
             }
@@ -574,7 +571,7 @@ impl Instruction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use BranchInstruction as BI;
+    use BranchConditional as BI;
     use Instruction as I;
     use MemoryInstruction as MI;
     use MemoryTarget as B;
@@ -598,7 +595,7 @@ mod tests {
             Ok((
                 &data[4..],
                 I::Branch {
-                    instruction: BI::BranchIfMinus,
+                    instruction: BI::Minus,
                     offset: -0x12,
                 }
             ))
