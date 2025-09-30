@@ -140,6 +140,7 @@ impl Nes {
         use instruction::ImpliedInstruction as II;
         use instruction::MemoryInstruction as MI;
 
+        self.executed_instructions.push(instruction);
         match instruction {
             I::Implied(implied_instruction) => match implied_instruction {
                 II::Break => {

@@ -6,7 +6,7 @@ use crate::nes::cpu::ShortAddress;
 type Offset = i8;
 
 /// Info about 6502 instructions have been taken from https://www.nesdev.org/wiki/Instruction_reference.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Instruction {
     /// Instruction with pre-defined arguments, e.g. Break or IncrementX.
     Implied(ImpliedInstruction),
@@ -30,7 +30,7 @@ pub enum Instruction {
     JumpToSubroutine(Address),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ImpliedInstruction {
     // Official instructions
     /// BRK: Software interrupt. Pushes program counter and flags to stack and sets program counter to $FFFE.
@@ -109,7 +109,7 @@ pub enum ImpliedInstruction {
     TransferYToAcc,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum MemoryInstruction {
     /// ADC: Adds the carry flag and a memory value to the accumulator.
     AddWithCarry,
@@ -175,7 +175,7 @@ pub enum MemoryInstruction {
     StoreY,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BranchConditional {
     /// BCC: Add value to program counter if carry flag is clear.
     CarryClear,
