@@ -7,3 +7,6 @@
 [submodule "nes-test-roms"]
 	path = roms/nes-test
 	url = git@github.com:christopherpow/nes-test-roms.git
+[submodule "roms/AccuracyCoin"]
+	path = roms/AccuracyCoin
+	url = git@github.com:100thCoin/AccuracyCoin.git
